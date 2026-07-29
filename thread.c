@@ -8,40 +8,133 @@
 #include <sys/queue.h>
 #include "print.c"
 #include "thread.h"
+#include <stdbool.h>
 
 /* Student's code goes here (Cooperative Threads). */
 /* Define the TCB and helper functions (if needed) for cooperative threads. */
 
-/* Student's code ends here. */
+#define MAX_THREADS 32
+struct thread TCB[MAX_THREADS];
+int current_idx;
+
+void threads_clear()
+{
+    // 清理进程
+    for(int i=0;i<MAX_THREADS;i++)
+    {
+        if(TCB[i].status == THREAD_TERMINATED)
+        {
+            if(TCB[i].stack_base!=NULL)
+            {
+                free(TCB[i].stack_base);
+                TCB[i].stack_base = NULL;
+
+            }
+            TCB[i].status = THREAD_UNUSED;
+        } 
+    }
+}
 
 void thread_init() {
-    /* Student's code goes here (Cooperative Threads). */
-
-    /* Student's code ends here. */
+    for( int i = 1;i<MAX_THREADS;i++)
+    {
+        TCB[i].id = i;
+        TCB[i].status = THREAD_UNUSED;
+    }
+    TCB[0].id = 0;
+    TCB[0].status = THREAD_RUNNING;
+    TCB[0].args = NULL;
+    TCB[0].entry = NULL;
+    TCB[0].stack_base = NULL;
 }
 
 void ctx_entry() {
-    /* Student's code goes here (Cooperative Threads). */
-
-    /* Student's code ends here. */
+    void (*entry)(void* args) = TCB[current_idx].entry;
+    void *args = TCB[current_idx].args;
+    if(entry!=NULL)
+        entry(args);
+    thread_exit(); 
 }
 
 void thread_create(void (*entry)(void *arg), void *arg) {
-    /* Student's code goes here (Cooperative Threads). */
+    int idx=-1;
+    for(int i=0;i<MAX_THREADS;i++)
+    {
+        if(TCB[i].status==THREAD_UNUSED)
+        {
+            idx = i;
+            break;
+        }
+    }
+    if(idx!=-1)
+    {
+        void* stack = malloc(STACK_SIZE);
+        if(stack == NULL)
+        {
+            printf("Failed to allocate stack memory for thread\n\r");
+            return;
+        }
+        void* init_sp = (char*)stack + STACK_SIZE;
+        TCB[idx].args = arg;
+        TCB[idx].entry = entry;
+        TCB[idx].sp = init_sp;
+        TCB[idx].stack_base =stack;
 
-    /* Student's code ends here. */
+        // 上下文切换
+        int old_idx = current_idx;
+        TCB[old_idx].status = THREAD_READY;
+        TCB[idx].status = THREAD_RUNNING;
+        current_idx = idx;
+        ctx_start(&TCB[old_idx].sp,init_sp); // 调用这个的时候，会把主线程的返回地址压入栈中，不是子线程的栈
+        // ctx_start 会调用 ctx_entry，把自己的返回地址压入子线程的栈中。当子线程结束后，一步一步返回时
+        //返回到 ctx_start时就在自己的栈上找不到下一个返回地址了。所以需要 thread_exit来善后
+
+        // 清理进程
+        threads_clear();
+    }
+    else
+    {
+        printf("Failed to create thread");
+        return;
+    }
 }
 
 void thread_yield() {
-    /* Student's code goes here (Cooperative Threads). */
-
-    /* Student's code ends here. */
+    int idx = current_idx+1;
+    for(;idx%MAX_THREADS!=current_idx;idx++)
+    {
+        if(TCB[idx % MAX_THREADS].status==THREAD_READY)
+        {
+            idx =idx%MAX_THREADS;
+            break;
+        }
+    }
+    if(idx%MAX_THREADS == current_idx)
+        return;
+    int old_idx = current_idx;
+    if(TCB[old_idx].status == THREAD_RUNNING)
+        TCB[old_idx].status = THREAD_READY;
+    TCB[idx].status = THREAD_RUNNING;
+    current_idx = idx;
+    ctx_switch(&TCB[old_idx].sp,TCB[idx].sp);    
+    threads_clear();
 }
 
 void thread_exit() {
-    /* Student's code goes here (Cooperative Threads). */
-
-    /* Student's code ends here. */
+    TCB[current_idx].status = THREAD_TERMINATED;
+    bool is_end = true;
+    for(int i=0;i<MAX_THREADS;i++)
+    {
+        if(TCB[i].status == THREAD_RUNNING || TCB[i].status==THREAD_READY)
+        {
+            is_end = false;
+            break;
+        }
+    }
+    if(is_end) //只剩最后一个进程调用 thread_exit会进入这种分支。
+        _end();
+    else
+        thread_yield();
 }
 
 /* Student's code goes here (Cooperative Threads). */

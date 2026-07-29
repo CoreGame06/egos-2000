@@ -1,16 +1,18 @@
 /* Student's code goes here (Cooperative Threads). */
 enum thread_status {
-	THREAD_RUNNING,
-    /* Define the various possible status of a thread. */
-
+    THREAD_UNUSED, //槽位未使用 0
+	THREAD_RUNNING, //线程正在运行 1
+	THREAD_READY,   //线程准备就绪 2
+	THREAD_TERMINATED, //线程终止，等待清理 3
 };
 
 struct thread {
     int id;
     void* sp;
     enum thread_status status;
-    /* Define the data structure for thread control block. */
-
+    void (*entry)(void* args);
+    void* args;
+    void* stack_base;
 };
 
 struct cv {
