@@ -1,9 +1,14 @@
 /* Student's code goes here (Cooperative Threads). */
+#include <sys/queue.h>
+
+#define MAX_THREADS 32
+
 enum thread_status {
-    THREAD_UNUSED, //槽位未使用 0
-	THREAD_RUNNING, //线程正在运行 1
-	THREAD_READY,   //线程准备就绪 2
-	THREAD_TERMINATED, //线程终止，等待清理 3
+    THREAD_UNUSED,     //槽位未使用 0
+    THREAD_RUNNING,    //线程正在运行 1
+    THREAD_READY,      //线程准备就绪 2
+    THREAD_TERMINATED, //线程终止，等待清理 3
+    THREAD_WAITING     //等待 4
 };
 
 struct thread {
@@ -13,11 +18,24 @@ struct thread {
     void (*entry)(void* args);
     void* args;
     void* stack_base;
+
+    TAILQ_ENTRY(thread) entries; //包含一个*prev和*next
+    /*
+    struct {
+    struct thread *tqe_next;  // 下一个线程
+    struct thread **tqe_prev; // 前一个节点的next指针（双向链表优化）
+    } entries;
+    */
 };
 
-struct cv {
-    /* Define the data structure for conditional variables. */
+/*struct thread_queue {
+    struct thread *tqh_first;  // 队列第一个元素
+    struct thread **tqh_last;   // 队尾指针的指针，尾插O(1)
+};*/
+TAILQ_HEAD(thread_queue, thread);
 
+struct cv {
+    struct thread_queue waiters;
 };
 /* Student's code ends here. */
 
@@ -106,3 +124,15 @@ void cv_wait(struct cv *condition);
  * the current thread should continue to run).
  */
 void cv_signal(struct cv *condition);
+
+/*
+ * =========================================================================
+ * Reference Definitions: Fixed-size Array-based Structure Definitions
+ * (历史版本备忘：基于固定大小数组的结构体定义)
+ * =========================================================================
+ *
+ * struct cv_array {
+ *     int waiters[MAX_THREADS];
+ *     int count;
+ * };
+ */

@@ -133,7 +133,7 @@ int format_to_str_len(const char* fmt, va_list args) {
             }
         }
     }
-    return len;
+    return len + 1;
 }
 
 int printf(const char* format, ...) {
@@ -155,14 +155,12 @@ int printf(const char* format, ...) {
     return 0;
 }
 
+/*
 int main() {
     char* msg = "Hello, World!\n\r";
     terminal_write(msg, 15);
-
-    /* Uncomment this line of code when implementing formatted output. */
     printf("%s-%d is awesome!\n\r", "egos", 2000); 
 
-    /*Test*/
     printf("%c is character $\n\r", '$');
     printf("%c is character 0\n\r", (char)48);
     printf("%x is integer 1234 in hexadecimal\n\r", 1234);
@@ -172,3 +170,4 @@ int main() {
 
     return 0;
 }
+*/
