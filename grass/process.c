@@ -34,7 +34,11 @@ int proc_alloc() {
              * Initialize the fields for lifecycle statistics and MLFQ.
              * [System Call & Protection]
              * Initialize the fields for the process sleep system call. */
-
+            proc_set[i].cpu_time=0;
+            proc_set[i].start_time=mtime_get();
+            proc_set[i].last_run_time=0;
+            proc_set[i].time_intr_time=0;
+            proc_set[i].first_time=0;
             /* Student's code ends here. */
             return curr_pid;
         }
@@ -44,16 +48,30 @@ int proc_alloc() {
 
 void proc_free(int pid) {
     /* Student's code goes here (Preemptive Scheduling). */
-
     /* Print the lifecycle statistics of the terminated process or processes. */
-    if (pid != GPID_ALL) {
+    if (pid != GPID_ALL) { // pid==GPID_ALL==-1时杀死全部进程
+        for(uint i=0;i<MAX_NPROCESS;i++)
+        {
+            if(proc_set[i].pid==pid)  // 这里pid创建时会一直++
+            {
+                ulonglong turnaround = mtime_get()-proc_set[i].start_time;
+                ulonglong response = proc_set[i].first_time-proc_set[i].start_time;
+                INFO("process %d terminated after %d timer interrupts, turnaround time: %dms, response time: %dms, CPU time: %dms",
+                pid,proc_set[i].time_intr_time,turnaround/10000,response/10000,proc_set[i].cpu_time/10000);
+                break;
+            }
+        }
         earth->mmu_free(pid);
         proc_set_status(pid, PROC_UNUSED);
     } else {
         /* Free all user processes. */
         for (uint i = 0; i < MAX_NPROCESS; i++)
-            if (proc_set[i].pid >= GPID_USER_START &&
+            if (proc_set[i].pid >= GPID_USER_START && //小于 GPID_USER_START的是系统核心进程
                 proc_set[i].status != PROC_UNUSED) {
+                ulonglong turnaround = mtime_get()-proc_set[i].start_time;
+                ulonglong response = proc_set[i].first_time-proc_set[i].start_time;
+                INFO("process %d terminated after %d timer interrupts, turnaround time: %dms, response time: %dms, CPU time: %dms",
+                proc_set[i].pid,proc_set[i].time_intr_time,turnaround/10000,response/10000,proc_set[i].cpu_time/10000);
                 earth->mmu_free(proc_set[i].pid);
                 proc_set[i].status = PROC_UNUSED;
             }

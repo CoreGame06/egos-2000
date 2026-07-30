@@ -75,8 +75,11 @@ static void intr_entry(uint id) {
 
     /* Student's code ends here. */
 
-    if (id == INTR_ID_TIMER) return proc_yield();
-
+    if (id == INTR_ID_TIMER) 
+    {
+        ++proc_set[curr_proc_idx].time_intr_time;
+        return proc_yield();
+    }
     /* Student's code goes here (Ethernet & TCP/IP). */
 
     /* Handle an external interrupt from the Intel Gigabit Ethernet Controller.
@@ -98,7 +101,8 @@ static void proc_yield() {
      * Modify the loop below to find the next process to schedule with MLFQ.
      * [System Call & Protection]
      * Do not schedule a process that should still be sleeping at this time. */
-
+    ulonglong now = mtime_get();
+    proc_set[curr_proc_idx].cpu_time += now - proc_set[curr_proc_idx].last_run_time;
     int next_idx = MAX_NPROCESS;
     for (uint i = 1; i <= MAX_NPROCESS; i++) {
         struct process* p = &proc_set[(curr_proc_idx + i) % MAX_NPROCESS];
@@ -115,6 +119,9 @@ static void proc_yield() {
          * Measure and record lifecycle statistics for the *next* process.
          * [System Call & Protection | Multicore & Locks]
          * Modify mstatus.MPP to enter machine or user mode after mret. */
+        if(proc_set[next_idx].first_time==0)
+            proc_set[next_idx].first_time = mtime_get();
+        proc_set[next_idx].last_run_time = mtime_get();
 
     } else {
         /* [Multicore & Locks]

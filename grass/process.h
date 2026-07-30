@@ -20,6 +20,12 @@ struct process {
     /* Student's code goes here (Preemptive Scheduling | System Call). */
 
     /* Add new fields for lifecycle statistics, MLFQ, or process sleep. */
+    ulonglong start_time;
+    ulonglong first_time; // 第一次被调用的时刻
+    ulonglong last_run_time; //用于计算累积时刻，当前时刻减去这一时刻
+    ulonglong cpu_time; //当前进程总的运行时间
+    uint time_intr_time; //中断次数
+    
 
     /* Student's code ends here. */
 };
