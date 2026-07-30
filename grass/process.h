@@ -26,7 +26,9 @@ struct process {
     ulonglong cpu_time; //当前进程总的运行时间
     uint time_intr_time; //中断次数
     
-
+    // 设置优先级
+    int level;
+    ulonglong level_time_left;
     /* Student's code ends here. */
 };
 #define MAX_NPROCESS 16

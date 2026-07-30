@@ -16,10 +16,10 @@ ulonglong mtime_get() {
     uint low, high;
     do {
         high = REGW(MTIME_BASE, 4);
-        low  = REGW(MTIME_BASE, 0);
-    } while (REGW(MTIME_BASE, 4) != high);
+        low  = REGW(MTIME_BASE, 0); 
+    } while (REGW(MTIME_BASE, 4) != high); // 用 do while 防止进位
 
-    return (((ulonglong)high) << 32) | low;
+    return (((ulonglong)high) << 32) | low; 
 }
 
 static void mtimecmp_set(ulonglong time, uint core_id) {

@@ -39,6 +39,9 @@ int proc_alloc() {
             proc_set[i].last_run_time=0;
             proc_set[i].time_intr_time=0;
             proc_set[i].first_time=0;
+
+            proc_set[i].level = 0;
+            proc_set[i].level_time_left = MLFQ_LEVEL_RUNTIME(0);
             /* Student's code ends here. */
             return curr_pid;
         }
@@ -57,7 +60,7 @@ void proc_free(int pid) {
                 ulonglong turnaround = mtime_get()-proc_set[i].start_time;
                 ulonglong response = proc_set[i].first_time-proc_set[i].start_time;
                 INFO("process %d terminated after %d timer interrupts, turnaround time: %dms, response time: %dms, CPU time: %dms",
-                pid,proc_set[i].time_intr_time,turnaround/10000,response/10000,proc_set[i].cpu_time/10000);
+                pid,proc_set[i].time_intr_time,(uint)(turnaround/10000),(uint)(response/10000),(uint)(proc_set[i].cpu_time/10000));
                 break;
             }
         }
@@ -71,7 +74,7 @@ void proc_free(int pid) {
                 ulonglong turnaround = mtime_get()-proc_set[i].start_time;
                 ulonglong response = proc_set[i].first_time-proc_set[i].start_time;
                 INFO("process %d terminated after %d timer interrupts, turnaround time: %dms, response time: %dms, CPU time: %dms",
-                proc_set[i].pid,proc_set[i].time_intr_time,turnaround/10000,response/10000,proc_set[i].cpu_time/10000);
+                proc_set[i].pid,proc_set[i].time_intr_time,(uint)(turnaround/10000),(uint)(response/10000),(uint)(proc_set[i].cpu_time/10000));
                 earth->mmu_free(proc_set[i].pid);
                 proc_set[i].status = PROC_UNUSED;
             }
@@ -85,6 +88,12 @@ void mlfq_update_level(struct process* p, ulonglong runtime) {
     /* Update the MLFQ-related fields in struct process* p after this
      * process has run on the CPU for another ulonglong runtime time units. */
 
+    if((p->level_time_left-=runtime)<=0)
+    {
+        if(p->level<MLFQ_NLEVELS-1)
+            ++p->level;
+        p->level_time_left = MLFQ_LEVEL_RUNTIME(p->level); //写在循环外面，level=4时也要重置时间的
+    }
     /* Student's code ends here. */
 }
 
@@ -92,11 +101,29 @@ void mlfq_reset_level() {
     /* Student's code goes here (Preemptive Scheduling). */
     if (!earth->tty_input_empty()) {
         /* Reset the level of GPID_SHELL if there is pending keyboard input. */
+        for(int i=0;i<MAX_NPROCESS;i++)
+        {
+            if(proc_set[i].pid == GPID_SHELL && proc_set[i].status != PROC_UNUSED)
+            {
+                proc_set[i].level =0;
+                proc_set[i].level_time_left = MLFQ_LEVEL_RUNTIME(0);
+                break;
+            }
+        }
+
     }
 
     static ulonglong MLFQ_last_reset_time = 0;
     /* Reset the level of all processes every MLFQ_RESET_PERIOD time units. */
-
+    if(mtime_get()-MLFQ_last_reset_time>=MLFQ_RESET_PERIOD)
+    {
+        for(int i=0;i<MAX_NPROCESS;i++)
+        {
+            proc_set[i].level = 0;
+            proc_set[i].level_time_left = MLFQ_LEVEL_RUNTIME(0);
+        }
+        MLFQ_last_reset_time = mtime_get();
+    }
     /* Student's code ends here. */
 }
 

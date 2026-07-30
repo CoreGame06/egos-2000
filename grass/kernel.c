@@ -102,15 +102,20 @@ static void proc_yield() {
      * [System Call & Protection]
      * Do not schedule a process that should still be sleeping at this time. */
     ulonglong now = mtime_get();
-    proc_set[curr_proc_idx].cpu_time += now - proc_set[curr_proc_idx].last_run_time;
+    ulonglong runtime = now - proc_set[curr_proc_idx].last_run_time;
+    proc_set[curr_proc_idx].cpu_time += runtime;
+    mlfq_update_level(&proc_set[curr_proc_idx],runtime);
+    mlfq_reset_level();
+
     int next_idx = MAX_NPROCESS;
+    int min_level = 5;
     for (uint i = 1; i <= MAX_NPROCESS; i++) {
         struct process* p = &proc_set[(curr_proc_idx + i) % MAX_NPROCESS];
         if (p->status == PROC_PENDING_SYSCALL) proc_try_syscall(p);
 
-        if (p->status == PROC_READY || p->status == PROC_RUNNABLE) {
+        if ((p->status == PROC_READY || p->status == PROC_RUNNABLE) && (p->level<min_level)) {
             next_idx = (curr_proc_idx + i) % MAX_NPROCESS;
-            break;
+            min_level = p->level;
         }
     }
 
