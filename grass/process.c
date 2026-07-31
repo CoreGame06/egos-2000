@@ -42,6 +42,8 @@ int proc_alloc() {
 
             proc_set[i].level = 0;
             proc_set[i].level_time_left = MLFQ_LEVEL_RUNTIME(0);
+
+            proc_set[i].sleep_until = 0;
             /* Student's code ends here. */
             return curr_pid;
         }
@@ -131,6 +133,14 @@ void proc_sleep(int pid, uint usec) {
     /* Student's code goes here (System Call & Protection). */
 
     /* Update the sleep-related fields in the struct process for process pid. */
+    for(int i=0;i<MAX_NPROCESS;i++)
+    {
+        if(proc_set[i].pid==pid)
+        {
+            proc_set[i].sleep_until = mtime_get() + (ulonglong)usec*10;
+            break;
+        }
+    }
 
     /* Student's code ends here. */
 }

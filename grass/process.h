@@ -29,6 +29,9 @@ struct process {
     // 设置优先级
     int level;
     ulonglong level_time_left;
+
+    // 设置到什么时候唤醒
+    ulonglong sleep_until;
     /* Student's code ends here. */
 };
 #define MAX_NPROCESS 16

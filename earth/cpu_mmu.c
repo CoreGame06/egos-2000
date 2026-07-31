@@ -204,7 +204,19 @@ void mmu_init() {
     /* Replace the PMP region above with two PMP NAPOT regions:
      * [APPS_ENTRY, APPS_ENTRY + 2MB) with permission R/W/X;
      * [SHELL_WORK_DIR, SHELL_WORK_DIR + 4KB) with permission R/W. */
+     uint pmpaddr0 = (APPS_ENTRY>>2) | (((2*1024*1024)>>3)-1);
+     uint pmpaddr1 = (SHELL_WORK_DIR>>2) | (((4*1024)>>3)-1);
+     asm("csrw pmpaddr0, %0": : "r"(pmpaddr0));
+     asm("csrw pmpaddr1, %0": : "r"(pmpaddr1));
 
+     // 写入权限
+    /*
+    权限要求：R=1, W=1, X=1 → 二进制 0000 0111（十六进制 0x7）
+    式要求：NAPOT 模式 → 二进制 0001 1000（十六进制 0x18）
+    按位或合并：0x18 | 0x7 = 0x1F （二进制 0001 1111）
+    */
+    uint pmpcfg0 = 0x1f | (0x1B<<8);
+    asm("csrw pmpcfg0, %0": : "r"(pmpcfg0));
     /* Student's code ends here. */
 
     CRITICAL("Choose a memory translation mechanism:");

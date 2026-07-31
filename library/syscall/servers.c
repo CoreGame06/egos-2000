@@ -16,7 +16,7 @@ void exit(int status) {
     struct proc_request req;
     req.type = PROC_EXIT;
     sys_send(GPID_PROCESS, (void*)&req, sizeof(req));
-    while (1);
+    while (1); //把程序拦在这里等待被os消灭
 }
 
 void sleep(uint usec) {
@@ -25,6 +25,10 @@ void sleep(uint usec) {
     /* Send a message to GPID_PROCESS for process sleep. For simplicity,
      * you can assume that GPID_PROCESS will be scheduled and handle the
      * message before the kernel reschedules the current process. */
+    struct proc_request req;
+    req.type = PROC_SLEEP;
+    req.sleep_time = usec;
+    sys_send(GPID_PROCESS,(void*)&req,sizeof(req));
 
     /* Student's code ends here. */
 }

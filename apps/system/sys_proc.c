@@ -72,7 +72,9 @@ int main(int unused, struct multicore* boot) {
         /* Student's code goes here (System Call & Protection). */
 
         /* Add a case that handles process sleep. */
-
+        case PROC_SLEEP:
+            grass->proc_sleep(sender,req->sleep_time);
+            break;
         /* Student's code ends here. */
         default:
             FATAL("sys_process: invalid request %d", req->type);

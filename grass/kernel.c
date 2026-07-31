@@ -63,6 +63,25 @@ static void excp_entry(uint id) {
     /* Student's code goes here (System Call & Protection | Virtual Memory). */
 
     /* Kill the current process if curr_pid is a user application. */
+    if(curr_pid>=GPID_USER_START)
+    {
+        INFO("process %d terminated with exception %d",curr_pid,id);
+        // 这里不可以直接free，通过sys_proc来退出
+        // 发消息给 sys_proc
+        struct proc_request *req= (struct proc_request*)proc_set[curr_proc_idx].syscall.content;
+        req->type = PROC_EXIT;
+
+        proc_set[curr_proc_idx].syscall.type = SYS_SEND;
+        proc_set[curr_proc_idx].syscall.receiver= GPID_PROCESS;
+        proc_set[curr_proc_idx].syscall.status= PENDING;
+
+        //投递
+        proc_set_pending(curr_pid);
+        proc_try_syscall(&proc_set[curr_proc_idx]);
+
+        proc_yield();
+        return;
+    }
 
     /* Student's code ends here. */
     FATAL("excp_entry: kernel got exception %d", id);
@@ -111,6 +130,15 @@ static void proc_yield() {
     int min_level = 5;
     for (uint i = 1; i <= MAX_NPROCESS; i++) {
         struct process* p = &proc_set[(curr_proc_idx + i) % MAX_NPROCESS];
+
+        // 睡眠拦截
+        if(p->sleep_until>0) 
+        {
+            if(mtime_get()<p->sleep_until)
+                continue;
+            else
+                p->sleep_until = 0; //时间到，清零
+        }
         if (p->status == PROC_PENDING_SYSCALL) proc_try_syscall(p);
 
         if ((p->status == PROC_READY || p->status == PROC_RUNNABLE) && (p->level<min_level)) {
@@ -128,6 +156,11 @@ static void proc_yield() {
             proc_set[next_idx].first_time = mtime_get();
         proc_set[next_idx].last_run_time = mtime_get();
 
+        // 将mstatus的11和12位清零
+        asm("csrc mstatus, %0" :: "r"(3<<11));
+        // 如果是内核进程，则设置为特权模式
+        if(proc_set[next_idx].pid<GPID_USER_START)
+            asm("csrs mstatus, %0" :: "r"(3<<11));
     } else {
         /* [Multicore & Locks]
          * Release the kernel lock.
@@ -136,7 +169,27 @@ static void proc_yield() {
          * Enable interrupts by setting the mstatus.MIE bit to 1;
          * Wait for the next interrupt using the wfi instruction. */
 
-        FATAL("proc_yield: no process to run on core %d", core_in_kernel);
+        uint has_active_process =0;
+        for(uint i=0;i<MAX_NPROCESS;i++)
+        {
+            if(proc_set[i].status != PROC_UNUSED)
+            {
+                has_active_process =1;
+                break;
+            }
+        }
+        if(!has_active_process)
+            FATAL("proc_yield: no process to run on core %d", core_in_kernel);
+        
+        // 1. 将当前正在运行的进程设为空闲占位符 MAX_NPROCESS
+        curr_proc_idx = MAX_NPROCESS;
+        // 2. 告诉定时器硬件：重置闹钟，开启新的一轮倒计时
+        earth->timer_reset(core_in_kernel);
+        // 3. 打开全局中断开关 (修改 mstatus 寄存器中的 MIE 位为 1)
+        // 这意味着只要硬件中断到来，CPU 就会马上响应
+        asm("csrs mstatus, %0" ::"r"(1 << 3));
+        // 4. 让 CPU 挂起休眠，不消耗指令周期，直到收到下一个中断为止
+        asm("wfi");
     }
     /* Student's code ends here. */
 
