@@ -158,8 +158,8 @@ static void proc_yield() {
 
         // 将mstatus的11和12位清零
         asm("csrc mstatus, %0" :: "r"(3<<11));
-        // 如果是内核进程，则设置为特权模式
-        if(proc_set[next_idx].pid<GPID_USER_START)
+        // 如果是内核进程，且没有开启页表，则设置为特权模式 (M-Mode)
+        if(proc_set[next_idx].pid < GPID_USER_START && earth->translation == SOFT_TLB)
             asm("csrs mstatus, %0" :: "r"(3<<11));
     } else {
         /* [Multicore & Locks]

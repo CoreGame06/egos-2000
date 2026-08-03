@@ -23,6 +23,7 @@
 #define SDHCI_INT_STAT         0x30
 #define SDHCI_INT_STAT_ENABLE  0x34
 #define SDHCI_INT_SIG_ENABLE   0x38
+#define PAGE_SIZE 4096
 
 static char sdhci_exec_cmd(uint idx, uint arg, uchar flag, uint mode) {
     /* Wait until the SD controller is ready for a new command. */
@@ -53,6 +54,19 @@ static void sdhci_read(uint offset, char* dst) {
 
     memcpy(dst, aligned_buf, BLOCK_SIZE);
 }
+
+static void sdhci_read_multi(uint offset, uint cnt, char* dst) 
+{
+    static __attribute__((aligned(PAGE_SIZE))) char aligned_buf[PAGE_SIZE];
+    REGW(SDHCI_BASE, SDHCI_DMA_ADDRESS)      = (uint)aligned_buf;
+    REGW(SDHCI_BASE, SDHCI_BLK_CNT_AND_SIZE) = (cnt << 16) | BLOCK_SIZE;   
+    #define DATA_PRESENT_FLAG (1 << 5)
+    #define MULTI_READ_MODE   ((1 << 5) | (1 << 4) | (1 << 2) | (1 << 1) | (1 << 0))
+    offset *= BLOCK_SIZE;
+    sdhci_exec_cmd(18, offset, DATA_PRESENT_FLAG,MULTI_READ_MODE);
+    memcpy(dst, aligned_buf, cnt*BLOCK_SIZE);
+}
+
 
 static int sdhci_init() {
 #define PCI_ECAM_ALLOW_MMIO_AND_DMA ((1 << 1) | (1 << 2))
@@ -128,6 +142,7 @@ static void sdspi_read(uint offset, char* dst) {
     spi_exchange(0xFF);
 }
 
+
 static int sdspi_init() {
     /* Configure the SPI controller. */
 #define CPU_CLOCK_RATE 100000000 /* 100MHz */
@@ -168,7 +183,7 @@ static int sdspi_init() {
 static enum disk_type { SD_CARD, FLASH_ROM } type;
 
 void disk_read(uint block_no, uint nblocks, char* dst) {
-    if (type == FLASH_ROM) {
+    if (type == FLASH_ROM) { // 闪存的读取方式
         char* src = (char*)FLASH_ROM_BASE + block_no * BLOCK_SIZE;
         memcpy(dst, src, nblocks * BLOCK_SIZE);
         return;
@@ -181,12 +196,37 @@ void disk_read(uint block_no, uint nblocks, char* dst) {
      * page boundaries, you can read at most PAGE_SIZE/BLOCK_SIZE==8 blocks
      * using SDMA. Start with SDMA and assume nblocks<=8. After command #18
      * using SDMA works, you can try the more complicated ADMA mechanism. */
-    for (uint i = 0; i < nblocks; i++)
-        (earth->platform == HARDWARE)
+    if(earth->platform == QEMU)
+    {
+        while(nblocks>0)
+        {
+            uint chunk = nblocks>8 ? 8:nblocks;
+            sdhci_read_multi(block_no,chunk,dst);
+
+            block_no+=chunk;
+            nblocks -= chunk;
+            dst += chunk * BLOCK_SIZE;
+        }
+    }
+    else{
+        for (uint i = 0; i < nblocks; i++)
+            (earth->platform == HARDWARE)
             ? sdspi_read(block_no + i, dst + BLOCK_SIZE * i)
             : sdhci_read(block_no + i, dst + BLOCK_SIZE * i);
-
+    }
     /* Student's code ends here. */
+}
+
+static void sdhci_write_multi(uint offset,uint cnt,char * src)
+{
+    static __attribute__((aligned(PAGE_SIZE))) char aligned_buf[PAGE_SIZE];
+    memcpy(aligned_buf,src, cnt*BLOCK_SIZE);
+    REGW(SDHCI_BASE, SDHCI_DMA_ADDRESS)      = (uint)aligned_buf;
+    REGW(SDHCI_BASE, SDHCI_BLK_CNT_AND_SIZE) = (cnt << 16) | BLOCK_SIZE;   
+    #define DATA_PRESENT_FLAG (1 << 5)
+    #define MULTI_WRITE_MODE   ((1 << 5) |  (1 << 2) | (1 << 1) | (1 << 0))
+    offset *= BLOCK_SIZE;
+    sdhci_exec_cmd(25, offset, DATA_PRESENT_FLAG, MULTI_WRITE_MODE);
 }
 
 void disk_write(uint block_no, uint nblocks, char* src) {
@@ -196,18 +236,55 @@ void disk_write(uint block_no, uint nblocks, char* src) {
     /* Implement the SD card multi-block write driver with command #25. Add
      * a testing function disk_test() as explained below, which should call
      * disk_write() and test whether multi-block write works correctly. */
+    if(earth->platform == QEMU)
+    {
+        while(nblocks>0)
+        {
+            uint chunk = nblocks>8 ? 8:nblocks;
+            sdhci_write_multi(block_no,chunk,src);
 
+            block_no+=chunk;
+            nblocks -= chunk;
+            src += chunk * BLOCK_SIZE;
+        }
+    }
+    else{
+        FATAL("Hardware SPI multi-block write is not implemented");
+    }
     /* Student's code ends here. */
 }
 
 /* Student's code goes here (I/O Device Driver). */
-
+static void disk_test()
+{
 /* Add a disk_test() function and call it at the end of disk_init(), so the
  * testing is conducted during boot time. You need to call disk_write() and
  * change the disk content, and revert all changes after finishing the test. */
+    INFO("Running disk read/write test...");
 
-/* Student's code ends here. */
+    #define TEST_BLOCK_NO 300
+    #define TEST_NBLOCKS 3
+    char buf_orig[TEST_NBLOCKS * BLOCK_SIZE];
+    char buf_test[TEST_NBLOCKS * BLOCK_SIZE];
+    char buf_read[TEST_NBLOCKS * BLOCK_SIZE];
 
+    memset(buf_test,0xAB,sizeof(buf_test));
+
+    // 备份
+    disk_read(TEST_BLOCK_NO,TEST_NBLOCKS,buf_orig);
+    // 写入
+    disk_write(TEST_BLOCK_NO,TEST_NBLOCKS,buf_test);
+    // 读取
+    disk_read(TEST_BLOCK_NO,TEST_NBLOCKS,buf_read);
+    // 比对
+    if((memcmp(buf_test,buf_read,sizeof(buf_test))!=0))
+        FATAL("Disk test failed: Read data does not match written data!");
+    
+    // 还原
+    disk_write(TEST_BLOCK_NO,TEST_NBLOCKS,buf_orig);
+    SUCCESS("Disk multi-block read/write test passed!");
+    /* Student's code ends here. */
+}
 void disk_init() {
     earth->disk_read  = disk_read;
     earth->disk_write = disk_write;
@@ -220,4 +297,6 @@ void disk_init() {
         type = (sdspi_init() == 0) ? SD_CARD : FLASH_ROM;
         if (type == FLASH_ROM) CRITICAL("Using FLASH_ROM instead of SD_CARD");
     }
+    if(type!=FLASH_ROM)
+        disk_test();
 }
