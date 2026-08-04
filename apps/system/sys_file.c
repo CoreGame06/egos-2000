@@ -13,6 +13,7 @@ int getsize(inode_intf bs, uint ino) { return FILE_SYS_DISK_SIZE / BLOCK_SIZE; }
 
 int setsize(inode_intf bs, uint ino, uint newsize) { FATAL("cannot set size"); }
 
+// 文件系统的底层，
 int read(inode_intf bs, uint ino, uint offset, block_t* block) {
     earth->disk_read(FILE_SYS_DISK_START + offset, 1, block->bytes);
     return 0;
@@ -27,7 +28,7 @@ int main() {
     SUCCESS("Enter kernel process GPID_FILE");
 
     /* Initialize the file system interface. */
-    struct inode_store disk = (struct inode_store){
+    struct inode_store disk = (struct inode_store){  // 文件系统的底层
         .read = read, .write = write, .getsize = getsize, .setsize = setsize};
 
     inode_intf fs =
@@ -39,7 +40,7 @@ int main() {
     grass->sys_send(GPID_PROCESS, buf, 32);
 
     /* Wait for inode read or write requests. */
-    while (1) {
+    while (1) {   // 文件系统的对外接口
         int sender, r;
         struct file_request* req = (void*)buf;
         struct file_reply* reply = (void*)buf;
@@ -53,6 +54,10 @@ int main() {
             break;
         case FILE_WRITE:
             /* The FILE_WRITE case is left to students as an exercise. */
+            r = fs->write(fs,req->ino,req->offset,(void*)&req->block);
+            reply->status = r == 0? FILE_OK:FILE_ERROR;
+            grass->sys_send(sender, (void*)reply, sizeof(*reply));
+            break;
         default:
             FATAL("sys_file: invalid request %d", req->type);
         }
