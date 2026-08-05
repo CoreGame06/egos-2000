@@ -48,7 +48,12 @@ void intr_init(uint core_id) {
     asm("csrs mstatus, %0" ::"r"(0x88));
 
     /* Student's code goes here (Ethernet & TCP/IP). */
-
+    // 开启CPU的外部中断使能（mie控制中断的寄存器）
+    asm("csrs mie, %0"::"r"(1<<11));
+    //在PLIC中将网卡的IRQ设置为1
+    REGW(PLIC_PRIORITY(ETH_IRQ),0) = 1;
+    /* 3. 在 PLIC 中为 core_id 开启 ETH_IRQ 的中断监听 */
+    REGW(PLIC_ENABLE_BASE(core_id) + (ETH_IRQ / 32) * 4, 0) |= (1 << (ETH_IRQ % 32));
     /* Enable external interrupt. Find the IRQ number corresponding to the
      * Ethernet controller device in PLIC, enable external interrupts from
      * this IRQ number, and then set the priority of this IRQ number to 1. */

@@ -18,7 +18,8 @@ struct grass* grass = (void*)GRASS_STRUCT;
 struct earth* earth = (void*)EARTH_STRUCT;
 
 /* Student's code goes here (Ethernet & TCP/IP). */
-
+struct rx_desc rx_desc[128] __attribute__((aligned(16)));
+char rx_buffer[128][2048] __attribute__((aligned(16)));
 /* Define an array of 128 RX descriptors and a buffer of 128*2048 bytes. Every
  * descriptor corresponds to a 2048-byte RX buffer for receiving from Ethernet.
  */
@@ -96,7 +97,26 @@ void boot() {
         /* Student's code ends here. */
 
         /* Student's code goes here (Ethernet & TCP/IP). */
+        if (earth->platform == QEMU) {
+            REGW(ETH_PCI_ECAM, 0x4)  = 0;
+            REGW(ETH_PCI_ECAM, 0x10) = ETH_CTL_BASE;
+            REGW(ETH_PCI_ECAM, 0x4)  = (1 << 1) | (1 << 2); /* 开启 Memory Space 和 Bus Master */
+        }
 
+        for(int i=0;i<128;i++)
+        {
+            rx_desc[i].addr_lo = (uint)rx_buffer[i];
+            rx_desc[i].addr_hi = 0;
+            rx_desc[i].status = 0;
+        }
+        // 配置网卡
+        REGW(ETH_CTL_BASE, 0x2800) = (uint)rx_desc;
+        REGW(ETH_CTL_BASE, 0x2804) = 0;
+        REGW(ETH_CTL_BASE, 0x2808) = 128 * sizeof(struct rx_desc);
+        REGW(ETH_CTL_BASE, 0x2810) = 0;
+        REGW(ETH_CTL_BASE, 0x2818) = 127;    
+        REGW(ETH_CTL_BASE, 0xD0)   = (1 << 7);
+        REGW(ETH_CTL_BASE, 0x100)  = (1 << 1) | (1 << 15) | (1 << 26);
         /* Use ETH_CTL_BASE as the BAR0 in Ethernet's PCIe configuration. Enable
          * the Ethernet controller's RXT0 (Receiver Timer Interrupt). Initialize
          * the MAC address register and the RX descriptor registers. Ensure that

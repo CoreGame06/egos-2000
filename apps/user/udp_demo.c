@@ -20,8 +20,8 @@
  * that this demo works in QEMU on your macOS or Linux. If needed,
  * you can further update the local MAC/IP addresses and UDP port. */
 
-#define DEST_MAC  {0xae, 0xc9, 0x06, 0x72, 0xb2, 0x64}
-#define LOCAL_MAC {0x52, 0x54, 0x00, 0x12, 0x34, 0x56}
+#define DEST_MAC  {0xe2, 0x8c, 0xf4, 0xbc, 0x59, 0x7b} 
+#define LOCAL_MAC {0x52, 0x54, 0x00, 0x12, 0x34, 0x56} 
 uint dest_ip = IPTOINT(192, 168, 18, 1), dest_udp_port = 8002;
 uint local_ip = IPTOINT(192, 168, 18, 2), local_udp_port = 8001;
 
@@ -143,24 +143,35 @@ int main() {
         REGW(ETH_PCI_ECAM, 0x4)  = 6;
         REGW(ETH_PCI_ECAM, 0x10) = ETH_CTL_BASE;
 
-        static char txbuffer[sizeof(struct ethernet_frame)];
+        /* Use identity mapped memory (SHELL_WORK_DIR) for E1000 DMA buffers */
+        char* txbuffer = (char*)(SHELL_WORK_DIR + 1024);
         memcpy(txbuffer, &eth_frame, sizeof(struct ethernet_frame));
 
-        static __attribute__((aligned(16))) char txdesc[16];
+        char* txdesc = (char*)(SHELL_WORK_DIR + 2048);
+        memset(txdesc, 0, 16);
         REGW(txdesc, 0)  = (uint)txbuffer;       /* addr   */
-        REGB(txdesc, 11) = REGB(txdesc, 11) | 5; /* cmd    */
-        REGB(txdesc, 12) = REGB(txdesc, 12) | 5; /* status */
+        
+        /* cmd = 9 (EOP=1 | RS=8). This tells hardware it's End of Packet and to Report Status. */
+        REGB(txdesc, 11) = 9; 
+        
+        /* Set length */
+        REGB(txdesc, 8)  = sizeof(struct ethernet_frame);
 
-        REGW(ETH_CTL_BASE, 0x3800) = (uint)&txdesc;
-        REGW(ETH_CTL_BASE, 0x3808) = 16;       /* tx descriptor length */
-        REGW(ETH_CTL_BASE, 0x3818) = 0;        /* tx descriptor tail */
+        /* Pass txdesc physical address to TDBAL */
+        REGW(ETH_CTL_BASE, 0x3800) = (uint)txdesc;
+        /* QEMU E1000 enforces 128-byte alignment for TDLEN and masks lower 7 bits. 
+           If 16 is used, TDLEN becomes 0 and DMA is silently dropped! Must use 128. */
+        REGW(ETH_CTL_BASE, 0x3808) = 128;      /* tx descriptor length (8 descriptors) */
+        REGW(ETH_CTL_BASE, 0x3810) = 0;        /* tx descriptor head (TDH) */
+        REGW(ETH_CTL_BASE, 0x3818) = 0;        /* tx descriptor tail (TDT) */
         REGW(ETH_CTL_BASE, 0x410)  = 0x60100A; /* tx inter-packet gap time */
         REGW(ETH_CTL_BASE, 0x400) |= 0x4010A;  /* tx control */
 
-        while (!(REGB(txdesc, 12) & 1));
-        REGB(txdesc, 12)           = REGB(txdesc, 12) & ~1;
-        REGB(txdesc, 8)            = sizeof(struct ethernet_frame);
+        /* Trigger transmission */
         REGW(ETH_CTL_BASE, 0x3818) = 1;
+
+        /* Wait for the hardware to set the DD (Descriptor Done) bit in status byte */
+        while (!(REGB(txdesc, 12) & 1));
     }
 
     return 0;

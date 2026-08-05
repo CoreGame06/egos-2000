@@ -209,6 +209,14 @@ void page_table_map(int pid, uint vpage_no, uint ppage_id) {
             setup_identity_region(pid, VIDEO_FRAME_BASE, 512, USER_RWX);
             /* 映射 EARTH_STRUCT 以便用户态宏定义(如FLASH_ROM_BASE)中可以访问 earth->platform */
             setup_identity_region(pid, EARTH_STRUCT, 1, USER_RWX);
+
+            /* 添加以太网网卡的内存映射 */
+            if (earth->platform == QEMU) {
+                setup_identity_region(pid, ETH_PCI_ECAM, 1, USER_RWX);
+                setup_identity_region(pid, ETH_CTL_BASE, 4, USER_RWX);
+            } else {
+                setup_identity_region(pid, ETH_BUF_BASE, 2, USER_RWX);
+            }
         }
     } 
 

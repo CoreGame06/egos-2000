@@ -87,10 +87,25 @@ int CRITICAL(const char* format, ...);
 int my_printf(const char* format, ...);
 
 /* Student's code goes here (Ethernet & TCP/IP). */
-
+#define ETH_IRQ 35
+#define PLIC_PRIORITY(irq)     (PLIC_BASE + 0x0000 + 4 * (irq))
+#define PLIC_ENABLE_BASE(core) (PLIC_BASE + 0x2000 + 0x80 * (core))
+#define PLIC_CAUSE(core)       (PLIC_BASE + 0x200004 + 0x1000 * (core))
 /* Define a data structure for Ethernet's RX descriptors. Declare the RX buffers
  * and the RX descriptors array with `extern` -- they are needed in earth/boot.c
  * for Ethernet controller initialization, and in grass/kernel.c for handling an
  * external interrupt upon receiving an Ethernet frame. */
+ // 接收描述符
+ struct rx_desc{
+    uint addr_lo;//地址低32位
+    uint addr_hi;
+    ushort length; //数据长度
+    ushort checksum; //校验和
+    uchar status; //状态
+    uchar errors; //错误标识
+    ushort special;
+} __attribute__((packed)); // 禁止内存对齐
 
+extern struct rx_desc rx_desc[128];
+extern char rx_buffer[128][2048];
 /* Student's code ends here. */

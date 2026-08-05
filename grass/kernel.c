@@ -101,6 +101,43 @@ static void intr_entry(uint id) {
     }
     /* Student's code goes here (Ethernet & TCP/IP). */
 
+    if(id == 11)
+    {
+        // 读取是谁触发了中断
+        uint irq = REGW(PLIC_CAUSE(0),0);
+
+        if(irq == ETH_IRQ)
+        {
+            /* 读取 E1000 的 ICR 寄存器 (0xC0) 清除网卡中断标志 */
+            REGW(ETH_CTL_BASE, 0xC0);
+
+            static int rx_head = 0;
+            while(rx_desc[rx_head].status & 1)
+            {
+                ushort len = rx_desc[rx_head].length;
+                rx_buffer[rx_head][len] = '\0'; // 添加字符串结束符 \0
+
+                uchar* pkt = (uchar*)rx_buffer[rx_head];
+                ushort ethertype = (pkt[12] << 8) | pkt[13];
+                uchar proto = pkt[23];
+
+                /* 打印所有收到的数据包信息以供调试 */
+                INFO("Got pkt: rxdesc[%d], len=%d, ethertype=0x%x, proto=%d", rx_head, len, ethertype, (uint)proto);
+
+                /* 只针对 IPv4 (0x0800) 且为 UDP (协议号 17) 的数据包打印 SUCCESS */
+                if (ethertype == 0x0800 && proto == 17) {
+                    char* msg = &rx_buffer[rx_head][42]; // 偏移量 42 为 UDP 消息体
+                    SUCCESS("Get %d bytes from rxdesc[%d]: %s", len, rx_head, msg);
+                }
+
+                rx_desc[rx_head].status = 0;
+                REGW(ETH_CTL_BASE, 0x2818) = rx_head;
+                rx_head = (rx_head + 1) % 128;
+            }
+        }
+        REGW(PLIC_CAUSE(0), 0) = irq; //写回irq，表示处理完了
+        return proc_yield();
+    }
     /* Handle an external interrupt from the Intel Gigabit Ethernet Controller.
      * Specifically, you need to (1) Claim the PLIC interrupt; (2) Check if the
      * interrupt is for receiving an Ethernet frame; (3) Read the received frame
