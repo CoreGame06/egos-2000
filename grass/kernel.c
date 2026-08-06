@@ -11,7 +11,7 @@
 #include <string.h>
 
 uint core_in_kernel;
-uint core_to_proc_idx[NCORES];
+uint core_to_proc_idx[NCORES] = {[0 ... NCORES-1] = MAX_NPROCESS};
 struct process proc_set[MAX_NPROCESS + 1];
 /* proc_set[MAX_NPROCESS] is a placeholder for idle cores. */
 
@@ -54,7 +54,9 @@ static void excp_entry(uint id) {
                sizeof(struct syscall));
         proc_set[curr_proc_idx].syscall.status = PENDING;
 
-        proc_set_pending(curr_pid);
+        // proc_set_pending(curr_pid);
+        proc_set[curr_proc_idx].status = PROC_PENDING_SYSCALL;
+
         proc_set[curr_proc_idx].mepc += 4;
         proc_try_syscall(&proc_set[curr_proc_idx]);
         proc_yield();
@@ -76,7 +78,8 @@ static void excp_entry(uint id) {
         proc_set[curr_proc_idx].syscall.status= PENDING;
 
         //投递
-        proc_set_pending(curr_pid);
+        // proc_set_pending(curr_pid);
+        proc_set[curr_proc_idx].status = PROC_PENDING_SYSCALL;
         proc_try_syscall(&proc_set[curr_proc_idx]);
 
         proc_yield();
@@ -185,10 +188,12 @@ static void proc_yield() {
         curr_proc_idx = MAX_NPROCESS;
         // 2. 告诉定时器硬件：重置闹钟，开启新的一轮倒计时
         earth->timer_reset(core_in_kernel);
-        // 3. 打开全局中断开关 (修改 mstatus 寄存器中的 MIE 位为 1)
+        // 3. 释放内核锁
+        kernel_lock = 0;
+        // 4. 打开全局中断开关 (修改 mstatus 寄存器中的 MIE 位为 1)
         // 这意味着只要硬件中断到来，CPU 就会马上响应
         asm("csrs mstatus, %0" ::"r"(1 << 3));
-        // 4. 让 CPU 挂起休眠，不消耗指令周期，直到收到下一个中断为止
+        // 5. 让 CPU 挂起休眠，不消耗指令周期，直到收到下一个中断为止
         asm("wfi");
     }
     /* Student's code ends here. */
@@ -240,8 +245,52 @@ static void proc_try_recv(struct process* receiver) {
     memcpy((void*)syscall_paddr, &receiver->syscall, sizeof(struct syscall));
 
     /* Set the receiver and sender back to RUNNABLE. */
-    proc_set_runnable(receiver->pid);
-    proc_set_runnable(receiver->syscall.sender);
+    // proc_set_runnable(receiver->pid);
+    // proc_set_runnable(receiver->syscall.sender);
+    receiver->status = PROC_RUNNABLE;
+    for (int i = 0; i < MAX_NPROCESS; i++) {
+        if (proc_set[i].pid == receiver->syscall.sender &&
+            proc_set[i].syscall.type == SYS_SEND &&
+            proc_set[i].syscall.receiver == receiver->pid &&
+            proc_set[i].status == PROC_PENDING_SYSCALL) {
+            proc_set[i].status = PROC_RUNNABLE;
+            break;
+        }
+    }
+}
+
+
+static void proc_try_thread_create(struct process* proc)
+{
+    int new_idx = -1;
+    for(int i=0;i<MAX_NPROCESS;i++)
+    {
+        if(proc_set[i].status == PROC_UNUSED)
+        {
+            new_idx = i;
+            break;
+        }
+    }
+    if(new_idx == -1)
+        FATAL("No free process slot for new thread");
+    
+    // 拆包参数
+    void** args = (void**)proc->syscall.content;
+    void* entry = args[0];
+    void* arg  = args[1];
+    void* stack_top = args[2];
+    
+    proc_set[new_idx].pid = proc->pid;
+    proc_set[new_idx].status = PROC_RUNNABLE;
+    proc_set[new_idx].mepc = (uint)entry;
+
+    // 初始化寄存器
+    memset(proc_set[new_idx].saved_registers,0,sizeof(proc_set[new_idx].saved_registers));
+    proc_set[new_idx].saved_registers[0] = (uint)arg;
+    proc_set[new_idx].saved_registers[30] = (uint)stack_top;
+
+    proc->syscall.status = DONE;
+    proc->status = PROC_RUNNABLE;
 }
 
 static void proc_try_syscall(struct process* proc) {
@@ -251,6 +300,9 @@ static void proc_try_syscall(struct process* proc) {
         break;
     case SYS_SEND:
         proc_try_send(proc);
+        break;
+    case SYS_THREAD:
+        proc_try_thread_create(proc);
         break;
     default:
         FATAL("proc_try_syscall: unknown syscall type=%d", proc->syscall.type);

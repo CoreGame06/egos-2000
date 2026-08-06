@@ -24,7 +24,8 @@ int main(int unused, struct multicore* boot) {
     SUCCESS("Enter kernel process GPID_PROCESS");
 
     /* Student's code goes here (Multicore & Locks). */
-
+    release(boot->boot_lock);
+    while(boot->booted_core_cnt<NCORES);   
     /* Release the boot lock, so the other 3 cores can enter the
      * boot loader. Then wait for all 4 cores to finish booting. */
 

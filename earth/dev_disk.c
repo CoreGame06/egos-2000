@@ -181,6 +181,7 @@ static int sdspi_init() {
 }
 
 static enum disk_type { SD_CARD, FLASH_ROM } type;
+static int disk_lock = 0;
 
 void disk_read(uint block_no, uint nblocks, char* dst) {
     if (type == FLASH_ROM) { // 闪存的读取方式
@@ -189,13 +190,7 @@ void disk_read(uint block_no, uint nblocks, char* dst) {
         return;
     }
 
-    /* Student's code goes here (I/O Device Driver). */
-
-    /* Replace the loop below by reading multiple SD card blocks altogether
-     * with the SD card command #18. Since SDMA cannot conduct a DMA across
-     * page boundaries, you can read at most PAGE_SIZE/BLOCK_SIZE==8 blocks
-     * using SDMA. Start with SDMA and assume nblocks<=8. After command #18
-     * using SDMA works, you can try the more complicated ADMA mechanism. */
+    acquire(disk_lock);
     if(earth->platform == QEMU)
     {
         while(nblocks>0)
@@ -214,7 +209,7 @@ void disk_read(uint block_no, uint nblocks, char* dst) {
             ? sdspi_read(block_no + i, dst + BLOCK_SIZE * i)
             : sdhci_read(block_no + i, dst + BLOCK_SIZE * i);
     }
-    /* Student's code ends here. */
+    release(disk_lock);
 }
 
 static void sdhci_write_multi(uint offset,uint cnt,char * src)
@@ -231,11 +226,8 @@ static void sdhci_write_multi(uint offset,uint cnt,char * src)
 
 void disk_write(uint block_no, uint nblocks, char* src) {
     if (type == FLASH_ROM) FATAL("FLASH_ROM is read only");
-    /* Student's code goes here (I/O Device Driver). */
 
-    /* Implement the SD card multi-block write driver with command #25. Add
-     * a testing function disk_test() as explained below, which should call
-     * disk_write() and test whether multi-block write works correctly. */
+    acquire(disk_lock);
     if(earth->platform == QEMU)
     {
         while(nblocks>0)
@@ -251,7 +243,7 @@ void disk_write(uint block_no, uint nblocks, char* src) {
     else{
         FATAL("Hardware SPI multi-block write is not implemented");
     }
-    /* Student's code ends here. */
+    release(disk_lock);
 }
 
 /* Student's code goes here (I/O Device Driver). */

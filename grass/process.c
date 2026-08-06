@@ -13,8 +13,9 @@
 extern struct process proc_set[MAX_NPROCESS + 1];
 
 static void proc_set_status(int pid, enum proc_status status) {
+    if (pid <= 0) return;
     for (uint i = 0; i < MAX_NPROCESS; i++)
-        if (proc_set[i].pid == pid) proc_set[i].status = status;
+        if (proc_set[i].status != PROC_UNUSED && proc_set[i].pid == pid) proc_set[i].status = status;
 }
 
 void proc_set_ready(int pid) { proc_set_status(pid, PROC_READY); }
@@ -147,7 +148,9 @@ void proc_sleep(int pid, uint usec) {
 
 void proc_coresinfo() {
     /* Student's code goes here (Multicore & Locks). */
-
+    INFO("==============Core ID / Process ID==============");
+    for(int i=0;i<NCORES;i++)
+        INFO("Core #%d is running pid=%d",i,proc_set[core_to_proc_idx[i]].pid);
     /* Print out the pid of the process running on each CPU core. */
 
     /* Student's code ends here. */

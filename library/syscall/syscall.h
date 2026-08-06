@@ -6,6 +6,7 @@
 enum syscall_type {
     SYS_RECV = 1,
     SYS_SEND = 2,
+    SYS_THREAD = 3,
 };
 
 #define SYSCALL_MSG_LEN 1024
@@ -19,3 +20,4 @@ struct syscall {
 
 void sys_send(int receiver, char* msg, uint size);
 void sys_recv(int from, int* sender, char* buf, uint size);
+int thread_create(void (*entry)(void*),void * agr);

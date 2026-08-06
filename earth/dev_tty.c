@@ -28,7 +28,10 @@ void uart_getc(char* c) {
     }
 }
 
+static int tty_lock = 0;
+
 void uart_putc(char c) {
+    acquire(tty_lock);
     if (earth->platform == HARDWARE) {
         while (REGW(UART_BASE, LITEX_UART_TXFULL));
         REGW(UART_BASE, 0)                 = c;
@@ -37,6 +40,7 @@ void uart_putc(char c) {
         while (!(REGB(UART_BASE, VIRT_LINE_STATUS) & (1 << 5)));
         REGW(UART_BASE, 0) = c;
     }
+    release(tty_lock);
 }
 
 void tty_init() {

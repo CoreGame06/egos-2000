@@ -33,7 +33,7 @@ int main() {
 
         if (strcmp(buf, "coresinfo") == 0) {
             /* Student's code goes here (Multicore & Locks). */
-
+            grass->proc_coresinfo();
             /* Print out the process PID running on each core using
              * the proc_coresinfo() function in grass/process.c. */
 
@@ -43,7 +43,7 @@ int main() {
             grass->sys_send(GPID_PROCESS, (void*)&req, sizeof(req));
         } else if (strcmp(buf, "pwd") == 0) {
             printf("%s\n\r", workdir);
-        } else {
+        }else {
             req.type = PROC_SPAWN;
             if (0 != parse_request(buf, &req)) {
                 INFO("sys_shell: too many arguments or argument too long");

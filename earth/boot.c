@@ -131,7 +131,22 @@ void boot() {
         SUCCESS("--- Core #%d starts running ---", core_id);
 
         /* Student's code goes here (Multicore & Locks). */
+        if(earth->translation == SOFT_TLB)
+            FATAL("Multicore requires page table translation");
 
+        // 配置 4GB内存权限和satp寄存器
+        asm("csrw pmpaddr0, %0" : : "r"(0x40000000));
+        asm("csrw pmpcfg0, %0" : : "r"(0xF));
+        earth->mmu_switch(1); // 1即GPID_PROCESS()
+
+        // 初始化中断
+        intr_init(core_id);
+        //重置定时器
+        earth->timer_reset(core_id);
+        //释放锁
+        release(boot_lock);
+        // 挂起等待
+        asm("wfi");
         /* Refer to mmu_init() and intr_init(), and decide how to initialize
          * the CSRs for virtual memory and interrupts on this CPU core. */
 

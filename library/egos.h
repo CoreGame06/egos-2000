@@ -35,7 +35,7 @@ struct grass {
     /* Student's code goes here (System Call | Multicore & Locks). */
     void (*proc_sleep)(int pid,uint sleep_time);
     /* Add interface functions for process sleep or multicore information. */
-
+    void (*proc_coresinfo)();
     /* Student's code ends here. */
 };
 

@@ -1,0 +1,13 @@
+--- library/syscall/syscall.c
++++ library/syscall/syscall.c
+@@ -29,8 +29,9 @@
+     sys_invoke(SYS_WRITE);
+ }
+ 
++static char _thread_stack[4096];
+ int thread_create(void (*entry)(void*), void* arg) {
+-    void* stack = malloc(4096);
++    void* stack = _thread_stack;
+     struct syscall* sc = (struct syscall*)SYSCALL_ARG;
+     sc->type = SYS_THREAD;
+     void** args = (void**)sc->content;

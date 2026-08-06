@@ -5,6 +5,18 @@ cd /home/shenmi/egos-2000 && make qemu
 
 由于 Linux 系统的虚拟网络配置在重启后可能会重置，为了保证下次能够一次性顺畅演示，请按照以下步骤执行：
 
+如果你现在不需要演示网络部分，只需要把 Makefile 中启动 QEMU 的参数还原为普通模式即可。
+
+ Makefile 第 74 行：
+
+  + sudo $(QEMU) $(QEMU_MACHINE) $(QEMU_GRAPHIC) $(QEMU_FLASH_1) $(QEMU_SD_CARD) $(QEMU_ETHERNET_LINUX)
+  - $(QEMU) $(QEMU_MACHINE) $(QEMU_GRAPHIC) $(QEMU_FLASH_1) $(QEMU_SD_CARD)
+
+第61行
+  - QEMU_MACHINE = -M virt -smp 4 -m 8M -bios tools/egos.bin
+  + QEMU_MACHINE = -M virt -smp 4 -m 8M -bios tools/egos.bin
+
+
 ## 第一步：环境初始化与 ARP 绑定（宿主机终端）
 
 每次电脑重启或者网卡异常后，**必须在宿主机终端**直接复制并运行以下整段脚本。它会自动唤醒虚拟网卡 `virbr0`，并强制绑定静态 ARP（防止 Linux 找不到虚拟机 MAC 地址而发送 `0x0806` 请求包）：

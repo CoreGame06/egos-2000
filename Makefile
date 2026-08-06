@@ -58,7 +58,7 @@ install: egos
 	$(CC) tools/mkfs.c library/file/file$(FILESYS).c -DMKFS -DFILESYS=$(FILESYS) -DCPU_BIN_FILE="\"fpga/$(BOARD).bin\"" $(INCLUDE) -o tools/mkfs
 	cd tools; rm -f disk.img fpgaROM.bin qemuROM.bin; ./mkfs
 
-QEMU_MACHINE = -M virt -smp 1 -m 8M -bios tools/egos.bin
+QEMU_MACHINE = -M virt -smp 4 -m 8M -bios tools/egos.bin
 QEMU_GRAPHIC = -device VGA,addr=0x2 -serial mon:stdio
 QEMU_FLASH_1 = -drive if=pflash,format=raw,unit=1,file=tools/qemuROM.bin
 QEMU_SD_CARD = -device sdhci-pci,addr=0x1 -device sd-card,drive=MMC -drive if=none,file=tools/disk.img,format=raw,id=MMC
@@ -71,7 +71,7 @@ QEMU_ETHERNET_LINUX = -device e1000,netdev=E1000,addr=0x3,mac=52:54:00:12:34:56 
 
 qemu: install
 	@printf "$(YELLOW)-------- Simulate on QEMU-RISCV --------$(END)\n"
-	sudo $(QEMU) $(QEMU_MACHINE) $(QEMU_GRAPHIC) $(QEMU_FLASH_1) $(QEMU_SD_CARD) $(QEMU_ETHERNET_LINUX)
+	$(QEMU) $(QEMU_MACHINE) $(QEMU_GRAPHIC) $(QEMU_FLASH_1) $(QEMU_SD_CARD)
 
 program: install
 	@printf "$(YELLOW)-------- Program the $(BOARD) on-board ROM --------$(END)\n"

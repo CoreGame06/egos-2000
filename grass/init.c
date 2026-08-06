@@ -24,6 +24,7 @@ void grass_entry(uint core_id) {
     grass->sys_recv       = sys_recv;
     /* Student's code goes here (System Call | Multicore & Locks). */
     grass->proc_sleep     = proc_sleep;
+    grass->proc_coresinfo = proc_coresinfo;
     /* Initialize the grass interface for proc_sleep() or proc_coresinfo(). */
 
     /* Student's code ends here. */
@@ -31,7 +32,9 @@ void grass_entry(uint core_id) {
     /* Load GPID_PROCESS. */
     INFO("Load kernel process #%d: sys_process", GPID_PROCESS);
     elf_load(GPID_PROCESS, sys_proc_read, 0, 0);
-    proc_set_running(proc_alloc());
+    int pid = proc_alloc();
+    core_to_proc_idx[core_id] = pid - 1;
+    proc_set_running(pid);
     earth->mmu_switch(GPID_PROCESS);
     earth->mmu_flush_cache();
 

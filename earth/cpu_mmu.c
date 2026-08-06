@@ -25,16 +25,22 @@ struct page_info {
     uint vpage_no;
 } page_info_table[APPS_PAGES_CNT];
 
+static int mmu_lock = 0;
+
 uint mmu_alloc() {
+    acquire(mmu_lock);
     for (uint i = 0; i < APPS_PAGES_CNT; i++)
         if (!page_info_table[i].use) {
             page_info_table[i].use = 1;
+            release(mmu_lock);
             return i;
         }
+    release(mmu_lock);
     FATAL("mmu_alloc: no more free memory");
 }
 
 void mmu_free(int pid) {
+    acquire(mmu_lock);
     int total_pages = 0;
     int pt_pages = 0;
 
@@ -58,6 +64,7 @@ void mmu_free(int pid) {
             ++total_pages; //统计物理页的使用
             memset(&page_info_table[i], 0, sizeof(struct page_info));
         }
+    release(mmu_lock);
 
     if(earth->translation == PAGE_TABLE && pid>=GPID_USER_START)
     {
@@ -95,14 +102,15 @@ uint soft_tlb_translate(int pid, uint vaddr) {
     return vaddr;
 }
 
+static uint* pid_to_pagetable_base[MAX_NPROCESS];
+
 /* The code below creates an identity map using page tables (RISC-V Sv32). */
 #define USER_RWX     (0xC0 | 0x1F)
-static uint* root;
-static uint* leaf;
 /* Assume at most MAX_NPROCESS unique processes, just for simplicity. */
 
-void setup_identity_region(int pid, uint addr, uint npages, uint flag) {
+void setup_identity_region(uint* root, int pid, uint addr, uint npages, uint flag) {
     uint vpn1 = addr >> 22;
+    uint* leaf;
 
     if (root[vpn1] & 0x1) {
         /* Leaf has been allocated. */
@@ -141,56 +149,37 @@ void setup_identity_region(int pid, uint addr, uint npages, uint flag) {
 void pagetable_identity_map(int pid) {
     /* Allocate the root page table. */
     uint ppage_id                 = earth->mmu_alloc();
-    root                          = (void*)PAGE_ID_TO_ADDR(ppage_id);
+    uint* root                    = (void*)PAGE_ID_TO_ADDR(ppage_id);
     page_info_table[ppage_id].pid = pid;
-    pid_to_pagetable_base[pid]    = root;
     memset(root, 0, PAGE_SIZE);
 
     /* Set up the identity map for various memory regions. */
     for (uint i = RAM_START; i < RAM_END; i += PAGE_SIZE * 1024)
-        setup_identity_region(pid, i, 1024, USER_RWX);
+        setup_identity_region(root, pid, i, 1024, USER_RWX);
 
-    setup_identity_region(pid, ETH_CTL_BASE, 4, USER_RWX);
-    setup_identity_region(pid, UART_BASE, 1, USER_RWX);
-    setup_identity_region(pid, CLINT_BASE, 16, USER_RWX);
-    setup_identity_region(pid, FLASH_ROM_BASE, 1024, USER_RWX);
-    setup_identity_region(pid, VIDEO_FRAME_BASE, 512, USER_RWX);
+    setup_identity_region(root, pid, PLIC_BASE, 1024, USER_RWX);
+    setup_identity_region(root, pid, ETH_CTL_BASE, 4, USER_RWX);
+    setup_identity_region(root, pid, UART_BASE, 1, USER_RWX);
+    setup_identity_region(root, pid, CLINT_BASE, 16, USER_RWX);
+    setup_identity_region(root, pid, FLASH_ROM_BASE, 1024, USER_RWX);
+    setup_identity_region(root, pid, VIDEO_FRAME_BASE, 512, USER_RWX);
 
     if (earth->platform == QEMU) {
-        setup_identity_region(pid, ETH_PCI_ECAM, 1, USER_RWX);
-        setup_identity_region(pid, SDHCI_BASE, 1, USER_RWX);
+        setup_identity_region(root, pid, ETH_PCI_ECAM, 1, USER_RWX);
+        setup_identity_region(root, pid, SDHCI_PCI_ECAM, 1, USER_RWX);
+        setup_identity_region(root, pid, SDHCI_BASE, 1, USER_RWX);
     } else {
-        setup_identity_region(pid, SDSPI_BASE, 1, USER_RWX);
-        setup_identity_region(pid, WIFI_BASE, 1, USER_RWX);
-        setup_identity_region(pid, ETH_BUF_BASE, 2, USER_RWX);
+        setup_identity_region(root, pid, SDSPI_BASE, 1, USER_RWX);
+        setup_identity_region(root, pid, WIFI_BASE, 1, USER_RWX);
+        setup_identity_region(root, pid, ETH_BUF_BASE, 2, USER_RWX);
     }
+    asm volatile("fence rw, rw" ::: "memory");
+    pid_to_pagetable_base[pid]    = root;
 }
 
 void page_table_map(int pid, uint vpage_no, uint ppage_id) {
     if (pid >= MAX_NPROCESS) FATAL("page_table_map: pid too large");
 
-    /* Student's code goes here (Virtual Memory). */
-
-    /* Remove the soft_tlb_map below and do the following.
-     * (1) If page tables for process pid do not exist, initialize page tables.
-     *   * Initialization Case#1: pid < GPID_USER_START
-     * | Start Address   | # Pages | Size  | Explanation                       |
-     * +-----------------+---------+-------+-----------------------------------+
-     * | RAM_START       | 512     | 2 MB  | EGOS code, data, heap, stack      |
-     * | APPS_ENTRY      | 512     | 2 MB  | Apps code, data, heap, stack      |
-     * | APPS_PAGES_BASE | 512     | 2 MB  | Memory pages for page_alloc()     |
-     * | UART_BASE       | 1       | 4 KB  | Memory-mapped registers for TTY   |
-     * | SDHCI_BASE      | 1       | 4 KB  | Memory-mapped registers for SD    |
-     * | CLINT_BASE      | 16      | 64 KB | Memory-mapped registers for timer |
-     *
-     *   * Initialization Case#2: pid >= GPID_USER_START
-     * | Start Address   | # Pages | Size  | Explanation                       |
-     * +-----------------+---------+-------+-----------------------------------+
-     * | SHELL_WORK_DIR  | 1       | 4 KB  | Work dir (see apps/app.h)         |
-     * In later projects, you can add mappings for Ethernet, Wi-Fi, or VGA/HDMI.
-     *
-     * (2) After page tables for process pid have been initialized, update the
-     *     page tables and map *vpage_no* to *ppage_id* according to Sv32. */
     if(!pid_to_pagetable_base[pid])
     {
         if(pid<GPID_USER_START)
@@ -198,34 +187,37 @@ void page_table_map(int pid, uint vpage_no, uint ppage_id) {
         else
         {
             uint ppage_id_root = earth->mmu_alloc();
-            root = (void*)PAGE_ID_TO_ADDR(ppage_id_root);
+            uint* root = (void*)PAGE_ID_TO_ADDR(ppage_id_root);
             page_info_table[ppage_id_root].pid = pid; //正向
-            pid_to_pagetable_base[pid] = root;  // 反向
             memset(root,0,PAGE_SIZE);
         
-            setup_identity_region(pid,SHELL_WORK_DIR,1,USER_RWX); // SHELL_WORK_DIR要求恒等映射，实现共享内存
+            setup_identity_region(root, pid, SHELL_WORK_DIR, 1, USER_RWX); // SHELL_WORK_DIR要求恒等映射，实现共享内存
             /* 2.为用户进程映射 Flash ROM (放着图片) 和 VGA 显存 (用于显示) */
-            setup_identity_region(pid, FLASH_ROM_BASE, 512, USER_RWX);
-            setup_identity_region(pid, VIDEO_FRAME_BASE, 512, USER_RWX);
+            setup_identity_region(root, pid, FLASH_ROM_BASE, 512, USER_RWX);
+            setup_identity_region(root, pid, VIDEO_FRAME_BASE, 512, USER_RWX);
             /* 映射 EARTH_STRUCT 以便用户态宏定义(如FLASH_ROM_BASE)中可以访问 earth->platform */
-            setup_identity_region(pid, EARTH_STRUCT, 1, USER_RWX);
+            setup_identity_region(root, pid, EARTH_STRUCT, 1, USER_RWX);
 
-            /* 添加以太网网卡的内存映射 */
+            /* 添加以太网网卡和中断控制器的内存映射 */
             if (earth->platform == QEMU) {
-                setup_identity_region(pid, ETH_PCI_ECAM, 1, USER_RWX);
-                setup_identity_region(pid, ETH_CTL_BASE, 4, USER_RWX);
+                setup_identity_region(root, pid, ETH_PCI_ECAM, 1, USER_RWX);
+                setup_identity_region(root, pid, ETH_CTL_BASE, 4, USER_RWX);
+                setup_identity_region(root, pid, PLIC_BASE, 1024, USER_RWX);
             } else {
-                setup_identity_region(pid, ETH_BUF_BASE, 2, USER_RWX);
+                setup_identity_region(root, pid, ETH_BUF_BASE, 2, USER_RWX);
             }
+            asm volatile("fence rw, rw" ::: "memory");
+            pid_to_pagetable_base[pid] = root;  // 反向
         }
     } 
 
-    root = pid_to_pagetable_base[pid];
+    uint* root = pid_to_pagetable_base[pid];
 
     uint vaddr = vpage_no * PAGE_SIZE;
     uint paddr = (uint)PAGE_ID_TO_ADDR(ppage_id);
 
     uint vpn1 = vaddr >> 22;
+    uint* leaf;
 
     if (root[vpn1] & 0x1) {
         /* Leaf has been allocated. */
@@ -236,46 +228,41 @@ void page_table_map(int pid, uint vpage_no, uint ppage_id) {
         leaf                          = (void*)PAGE_ID_TO_ADDR(ppage_id);
         page_info_table[ppage_id].pid = pid;
         memset(leaf, 0, PAGE_SIZE);
+        asm volatile("fence rw, rw" ::: "memory");
         root[vpn1] = ((uint)leaf >> 2) | 0x1;
     }
     uint vpn0 = (vaddr >> 12) & 0x3FF;
     leaf[vpn0] = (paddr>>2) | USER_RWX;
+    asm volatile("fence rw, rw" ::: "memory");
     page_info_table[ppage_id].pid = pid;
     page_info_table[ppage_id].vpage_no = vpage_no;
     /* Student's code ends here. */
 }
 
 void page_table_switch(int pid) {
-    /* Student's code gvoes here (Virtual Memory). */
-
-    /* Remove the soft_tlb_switch below and, instead, update the page table
-     * base register (satp) using the value of pid_to_pagetable_base[pid].
-     * An example of updating the satp CSR is given in mmu_init(). */
+    if (pid < 0 || pid >= MAX_NPROCESS || !pid_to_pagetable_base[pid])
+        pid = 0;
     uint* root_pt = pid_to_pagetable_base[pid];
     asm("csrw satp, %0" :: "r"(((uint)root_pt>>12)|(1<<31)));
-    // 清楚CPU内部的TLB缓(缓存进程的虚拟内存->物理内存)
     earth->mmu_flush_cache();
-    /* Student's code ends here. */
 }
 
 uint page_table_translate(int pid, uint vaddr) {
-    /* Student's code goes here (Virtual Memory). */
-
-    /* Remove the following line of code. Walk through the page tables
-     * for process pid and return the physical address mapped from vaddr. */
+    if (pid < 0 || pid >= MAX_NPROCESS || !pid_to_pagetable_base[pid])
+        pid = 0;
     uint* root_pt = pid_to_pagetable_base[pid];
 
-    // 计算一级索引
-    uint vpn1 = vaddr>>22;
-    leaf = (void*)((root_pt[vpn1] << 2) & 0xFFFFF000);
+    uint vpn1 = vaddr >> 22;
+    if (!root_pt || !(root_pt[vpn1] & 0x1)) return vaddr;
+    uint* leaf = (void*)((root_pt[vpn1] << 2) & 0xFFFFF000);
 
     uint vpn0 = (vaddr >> 12) & 0x3FF;
+    if (!leaf) return vaddr;
     uint pte = leaf[vpn0];
+    if (!(pte & 0x1)) return vaddr;
 
-    // 逆向leaf[vpn0] = (paddr>>2) | USER_RWX; 然后补充偏移量
-    uint paddr = ((pte<<2) & (0xFFFFF000)) | (vaddr & 0xFFF);
+    uint paddr = ((pte << 2) & 0xFFFFF000) | (vaddr & 0xFFF);
     return paddr;
-    /* Student's code ends here. */
 }
 
 void flush_cache() {
@@ -339,7 +326,7 @@ void mmu_init() {
         asm("csrw pmpaddr0, %0" : : "r"(0x40000000));
         asm("csrw pmpcfg0, %0" : : "r"(0xF));
         pagetable_identity_map(0);
-        asm("csrw satp, %0" ::"r"(((uint)root >> 12) | (1 << 31)));
+        asm("csrw satp, %0" ::"r"(((uint)pid_to_pagetable_base[0] >> 12) | (1 << 31)));
 
         earth->mmu_map       = page_table_map;
         earth->mmu_switch    = page_table_switch;
