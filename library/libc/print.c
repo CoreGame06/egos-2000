@@ -14,26 +14,38 @@
 #include <stdlib.h>
 #include <stdarg.h>
 
+static char* fmt_u64(char* p, ulonglong v, uint base) {
+    char tmp[24]; int n = 0;
+    do tmp[n++] = "0123456789abcdef"[v % base]; while (v /= base);
+    while (n) *p++ = tmp[--n];
+    return p;
+}
+
 void format_to_str(char* out, const char* fmt, va_list args) {
-    for (out[0] = 0; *fmt != '\0'; fmt++) {
-        if (*fmt != '%') {
-            strncat(out, fmt, 1);
-        } else {
-            fmt++;
-            if (*fmt == 's') {
-                strcat(out, va_arg(args, char*));
-            } else if (*fmt == 'd') {
-                itoa(va_arg(args, int), out + strlen(out), 10);
-            } else if (*fmt == 'x') {
-                itoa(va_arg(args, int), out + strlen(out), 16);
-            }
-            /* Student's code goes here (Hello, World!). */
-
-            /* Handle format %c, %u, %p, %lld, %llu and %llx. */
-
-            /* Student's code ends here. */
+    char* p = out;
+    for (; *fmt; fmt++) {
+        if (*fmt != '%') { *p++ = *fmt; continue; }
+        fmt++;
+        uint lcount = 0;
+        while (*fmt == 'l') { lcount++; fmt++; }   /* %ld 按 32 位，%lld 按 64 位 */
+        switch (*fmt) {
+        case 's': { for (const char* s = va_arg(args, char*); *s;) *p++ = *s++; break; }
+        case 'c': *p++ = (char)va_arg(args, int); break;
+        case 'd': {
+            long long v = (lcount >= 2) ? va_arg(args, long long)
+                                        : (long long)va_arg(args, int);
+            if (v < 0) { *p++ = '-'; v = -v; }
+            p = fmt_u64(p, (ulonglong)v, 10); break;
+        }
+        case 'u': p = fmt_u64(p, (lcount >= 2) ? va_arg(args, ulonglong)
+                                               : (ulonglong)va_arg(args, uint), 10); break;
+        case 'x': p = fmt_u64(p, (lcount >= 2) ? va_arg(args, ulonglong)
+                                               : (ulonglong)va_arg(args, uint), 16); break;
+        case 'p': *p++ = '0'; *p++ = 'x';
+                  p = fmt_u64(p, (ulonglong)(uint)va_arg(args, void*), 16); break;
         }
     }
+    *p = 0;
 }
 
 #define LOG(prefix, suffix)                                                    \

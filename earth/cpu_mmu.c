@@ -17,7 +17,38 @@
 #define APPS_PAGES_CNT     (RAM_END - APPS_PAGES_BASE) / PAGE_SIZE
 
 #define MAX_NPROCESS 256
-static uint* pid_to_pagetable_base[MAX_NPROCESS];
+// static uint* pid_to_pagetable_base[MAX_NPROCESS];
+
+#define MAX_PT_ENTRY 32
+
+static struct {
+    int pid;
+    uint* root;
+} pt_map[MAX_PT_ENTRY];
+
+// 查找
+static uint** pt_root(int pid)
+{
+    for(uint i=0;i<MAX_PT_ENTRY;i++)
+        if(pt_map[i].pid==pid) return &pt_map[i].root;
+    return NULL;
+}
+
+// 先查找，没有则分配空
+static uint** pt_root_alloc(int pid)
+{
+    uint** r = pt_root(pid);
+    if(r) return r;
+    for(uint i =0;i<MAX_PT_ENTRY;i++)
+    {
+        if(pt_map[i].pid==0)
+        {
+            pt_map[i].pid = pid;
+            return &pt_map[i].root;
+        }
+    }
+    FATAL("pt_map:too many page tables");
+}
 
 struct page_info {
     int use;
@@ -28,7 +59,7 @@ struct page_info {
 static int mmu_lock = 0;
 
 uint mmu_alloc() {
-    acquire(mmu_lock);
+    acquire(mmu_lock);y
     for (uint i = 0; i < APPS_PAGES_CNT; i++)
         if (!page_info_table[i].use) {
             page_info_table[i].use = 1;
@@ -46,17 +77,38 @@ void mmu_free(int pid) {
 
     if(earth->translation == PAGE_TABLE && pid>=GPID_USER_START)
     {
-        uint* root_pt = pid_to_pagetable_base[pid];
-        if(root_pt)
+        // uint* root_pt = pid_to_pagetable_base[pid];
+        // if(root_pt)
+        // {
+        //     pt_pages = 1;
+        //     for(int i=0;i<1024;i++)
+        //     {
+        //         if(root_pt[i]&(0x1))
+        //             ++pt_pages;
+        //     }    
+        // }
+        // pid_to_pagetable_base[pid] = 0;
+        uint** r = pt_root(pid);
+        if(r && *r)
         {
+            uint *root_pt = *r;
             pt_pages = 1;
-            for(int i=0;i<1024;i++)
+            for(int i =0;i<1024;i++)
             {
-                if(root_pt[i]&(0x1))
+                if(root_pt[i] & (0x1))
                     ++pt_pages;
-            }    
+            }
+            *r = 0;
+            for(int i=0;i<MAX_PT_ENTRY;i++)
+            {
+                if(pt_map[i].pid == pid)
+                {
+                    pt_map[i].pid = 0;
+                    break;
+            
+                }
+            }
         }
-        pid_to_pagetable_base[pid] = 0;
     }
     for (uint i = 0; i < APPS_PAGES_CNT; i++)
         if (page_info_table[i].use && page_info_table[i].pid == pid)
@@ -102,7 +154,7 @@ uint soft_tlb_translate(int pid, uint vaddr) {
     return vaddr;
 }
 
-static uint* pid_to_pagetable_base[MAX_NPROCESS];
+// static uint* pid_to_pagetable_base[MAX_NPROCESS];
 
 /* The code below creates an identity map using page tables (RISC-V Sv32). */
 #define USER_RWX     (0xC0 | 0x1F)
@@ -174,13 +226,14 @@ void pagetable_identity_map(int pid) {
         setup_identity_region(root, pid, ETH_BUF_BASE, 2, USER_RWX);
     }
     asm volatile("fence rw, rw" ::: "memory");
-    pid_to_pagetable_base[pid]    = root;
+    // pid_to_pagetable_base[pid]    = root;
+    *pt_root_alloc(pid) = root;
 }
 
 void page_table_map(int pid, uint vpage_no, uint ppage_id) {
-    if (pid >= MAX_NPROCESS) FATAL("page_table_map: pid too large");
-
-    if(!pid_to_pagetable_base[pid])
+    // if (pid >= MAX_NPROCESS) FATAL("page_table_map: pid too large");
+    uint** r = pt_root(pid);
+    if(!r || !*r)
     {
         if(pid<GPID_USER_START)
             pagetable_identity_map(pid);
@@ -207,11 +260,12 @@ void page_table_map(int pid, uint vpage_no, uint ppage_id) {
                 setup_identity_region(root, pid, ETH_BUF_BASE, 2, USER_RWX);
             }
             asm volatile("fence rw, rw" ::: "memory");
-            pid_to_pagetable_base[pid] = root;  // 反向
+            *pt_root_alloc(pid) = root;  // 反向
         }
+        r = pt_root(pid);
     } 
 
-    uint* root = pid_to_pagetable_base[pid];
+    uint* root = *r;
 
     uint vaddr = vpage_no * PAGE_SIZE;
     uint paddr = (uint)PAGE_ID_TO_ADDR(ppage_id);
@@ -240,18 +294,23 @@ void page_table_map(int pid, uint vpage_no, uint ppage_id) {
 }
 
 void page_table_switch(int pid) {
-    if (pid < 0 || pid >= MAX_NPROCESS || !pid_to_pagetable_base[pid])
-        pid = 0;
-    uint* root_pt = pid_to_pagetable_base[pid];
+    // if (pid < 0 || pid >= MAX_NPROCESS || !pid_to_pagetable_base[pid])
+    //     pid = 0;
+    // uint* root_pt = pid_to_pagetable_base[pid];
+    uint** r = pt_root(pid);
+    if(!r || !*r) r = pt_root(0);
+    uint* root_pt = *r;
     asm("csrw satp, %0" :: "r"(((uint)root_pt>>12)|(1<<31)));
     earth->mmu_flush_cache();
 }
 
 uint page_table_translate(int pid, uint vaddr) {
-    if (pid < 0 || pid >= MAX_NPROCESS || !pid_to_pagetable_base[pid])
-        pid = 0;
-    uint* root_pt = pid_to_pagetable_base[pid];
-
+    // if (pid < 0 || pid >= MAX_NPROCESS || !pid_to_pagetable_base[pid])
+    //     pid = 0;
+    // uint* root_pt = pid_to_pagetable_base[pid];
+    uint** r = pt_root(pid);
+    if(!r || !*r) r = pt_root(0);
+    uint* root_pt = *r;
     uint vpn1 = vaddr >> 22;
     if (!root_pt || !(root_pt[vpn1] & 0x1)) return vaddr;
     uint* leaf = (void*)((root_pt[vpn1] << 2) & 0xFFFFF000);
@@ -326,7 +385,7 @@ void mmu_init() {
         asm("csrw pmpaddr0, %0" : : "r"(0x40000000));
         asm("csrw pmpcfg0, %0" : : "r"(0xF));
         pagetable_identity_map(0);
-        asm("csrw satp, %0" ::"r"(((uint)pid_to_pagetable_base[0] >> 12) | (1 << 31)));
+        asm("csrw satp, %0" ::"r"(((uint)*pt_root(0) >> 12) | (1 << 31)));
 
         earth->mmu_map       = page_table_map;
         earth->mmu_switch    = page_table_switch;

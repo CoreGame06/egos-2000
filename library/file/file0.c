@@ -19,6 +19,17 @@
 #define DUMMY_DISK_OFFSET(ino, offset) ino * 128 + offset
 
 /* Student's code goes here (File System). */
+
+// 将 superblock,I,F放入缓存，性能更好
+#define FAT_CACHE_MAX 32 //16kb
+#define INODE_CACHE_MAX 2 // 1kb
+
+static block_t fat_cache[FAT_CACHE_MAX];
+static block_t inode_cache[INODE_CACHE_MAX];
+static block_t sb_cache;
+static uint cache_I,cache_F;
+static int cache_ready = 0;
+
 struct inode{
     int size;
     int head;
@@ -34,58 +45,46 @@ struct superblock{
     int free_list_head;
 };
 
-int get_inode(inode_intf below,uint below_ino, uint ino,struct inode* in)
+static void cache_init(inode_intf below)
 {
-    int block_num = 1 + (ino/64);
-    int offset = ino % 64 ;
-    
-    block_t block;
-    below->read(below,below_ino,block_num,&block);
+    if(cache_ready) return;
+    below->read(below,0,0,&sb_cache);
+    struct superblock* sb = (struct superblock*)sb_cache.bytes;
+    if(sb->I > INODE_CACHE_MAX || sb->F>FAT_CACHE_MAX)
+        FATAL("mydisk:cache too small for I=%d F=%d",sb->I,sb->F);
+    cache_F = sb->F;
+    cache_I = sb->I;
 
-    struct inode* inodes = (struct inode*)block.bytes;
-    *in = inodes[offset];
+    for(uint b=0; b<cache_I;b++) below->read(below,0,1+b,&inode_cache[b]);
+    for(uint b=0;b<cache_F;b++) below->read(below,0,1+cache_I+b,&fat_cache[b]);
+}
+
+int get_inode(inode_intf below, uint below_ino, uint ino, struct inode* in) {
+    cache_init(below);
+    struct inode* inodes = (struct inode*)inode_cache[ino / 64].bytes;
+    *in = inodes[ino % 64];
     return 0;
 }
 
 // 在外部修改好后调用此函数保存修改
-int set_node(inode_intf below,uint below_ino, uint ino,struct inode* in)
-{
-    int block_num = 1 + (ino/64);
-    int offset = ino % 64 ;
-    
-    block_t block;
-    below->read(below,below_ino,block_num,&block);
-    struct inode* inodes = (struct inode*)block.bytes;
-    inodes[offset]=*in;
-
-    below->write(below,below_ino,block_num,&block);
-
-    return 0;
+int set_node(inode_intf below, uint below_ino, uint ino, struct inode* in) {
+    cache_init(below);
+    struct inode* inodes = (struct inode*)inode_cache[ino / 64].bytes;
+    inodes[ino % 64] = *in;
+    return below->write(below, below_ino, 1 + ino / 64, &inode_cache[ino / 64]);
 }
 
 int get_fat(inode_intf below,uint below_ino,struct superblock* sb, uint k)
 {
-    uint block_num = 1 + sb->I + (k/128);
-    uint offset = k % 128;
-
-    block_t block;
-    below->read(below,below_ino,block_num,&block);
-    struct entry* entries = (struct entry*)block.bytes;
-    return entries[offset].next;
+    cache_init(below);
+    return ((struct entry*)fat_cache[k/128].bytes)[k%128].next;
 }
 
 int set_fat(inode_intf below,uint below_ino,struct superblock* sb, uint k,int next)
 {
-    uint block_num = 1 + sb->I + (k/128);
-    uint offset = k % 128;
-
-    block_t block;
-    below->read(below,below_ino,block_num,&block);
-    struct entry* entries = (struct entry*)block.bytes;   
-    entries[offset].next = next;
-
-    below->write(below,below_ino,block_num,&block);
-    return 0;
+    cache_init(below);
+    ((struct entry*)fat_cache[k/128].bytes)[k%128].next =next;
+    return below->write(below,below_ino,1+cache_I+k/128,&fat_cache[k/128]);
 }
 /* Add a header file similar to file1.h, which defines data structures in your
  * file system. Include this header file and other header files you need, such
@@ -98,10 +97,8 @@ int mydisk_read(inode_intf self, uint ino, uint offset, block_t* block) {
 
     /* Replace the code below with your own file system read logic. */
     inode_intf below = self->state;
-    
-    block_t sb_block;
-    below->read(below,0,0,&sb_block);
-    struct superblock* sb = (struct superblock*)sb_block.bytes;
+    cache_init(below);
+    struct superblock* sb = (struct superblock*)sb_cache.bytes;
 
     struct inode in;
     get_inode(below,0,ino,&in);
@@ -123,10 +120,8 @@ int mydisk_write(inode_intf self, uint ino, uint offset, block_t* block) {
 
     /* Replace the code below with your own file system write logic. */
     inode_intf below = self->state;
-
-    block_t sb_block;
-    below->read(below,0,0,&sb_block);
-    struct superblock* sb = (struct superblock*)sb_block.bytes;
+    cache_init(below);
+    struct superblock* sb = (struct superblock*)sb_cache.bytes;
     struct inode in;
     get_inode(below,0,ino,&in);
 
@@ -149,7 +144,7 @@ int mydisk_write(inode_intf self, uint ino, uint offset, block_t* block) {
             set_fat(below,0,sb,curr,new_block);   
         }
         ++in.size;
-        below->write(below,0,0,&sb_block);
+        below->write(below,0,0,&sb_cache);
         set_node(below,0,ino,&in);
     }
     int curr = in.head;
@@ -173,10 +168,8 @@ int mydisk_getsize(inode_intf self, uint ino) {
 int mydisk_setsize(inode_intf self, uint ino, uint nblocks) {
     /* Student's code goes here (File System). */
     inode_intf below = self->state;
-
-    block_t sb_block;
-    below->read(below,0,0,&sb_block);
-    struct superblock* sb = (struct superblock*)sb_block.bytes;
+    cache_init(below);
+    struct superblock* sb = (struct superblock*)sb_cache.bytes;
 
     struct inode in;
     get_inode(below,0,ino,&in);   
@@ -201,7 +194,7 @@ int mydisk_setsize(inode_intf self, uint ino, uint nblocks) {
             set_fat(below,0,sb,curr,new_block);   
         }
         ++in.size;
-        below->write(below,0,0,&sb_block);
+        below->write(below,0,0,&sb_cache);
         set_node(below,0,ino,&in);
     }
     // nblocks = 0
@@ -217,7 +210,7 @@ int mydisk_setsize(inode_intf self, uint ino, uint nblocks) {
         }
         in.size=0;
         in.head=-1;
-        below->write(below,0,0,&sb_block);
+        below->write(below,0,0,&sb_cache);
         set_node(below,0,ino,&in);
     }
     // 其余不为0，且小于原来大小的情况
@@ -237,7 +230,7 @@ int mydisk_setsize(inode_intf self, uint ino, uint nblocks) {
             curr = next_block;
         }
         in.size = nblocks;
-        below->write(below,0,0,&sb_block);
+        below->write(below,0,0,&sb_cache);
         set_node(below,0,ino,&in);
     }
 

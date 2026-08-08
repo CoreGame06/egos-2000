@@ -90,12 +90,14 @@ void mlfq_update_level(struct process* p, ulonglong runtime) {
 
     /* Update the MLFQ-related fields in struct process* p after this
      * process has run on the CPU for another ulonglong runtime time units. */
-
-    if((p->level_time_left-=runtime)<=0)
+    if(p->level_time_left<=runtime) // 先比较，后减（无符号）
     {
-        if(p->level<MLFQ_NLEVELS-1)
-            ++p->level;
-        p->level_time_left = MLFQ_LEVEL_RUNTIME(p->level); //写在循环外面，level=4时也要重置时间的
+        if(p->level<MLFQ_NLEVELS-1) ++p->level;
+        p->level_time_left = MLFQ_LEVEL_RUNTIME(p->level);
+    }
+    else
+    {
+        p->level_time_left -= runtime;
     }
     /* Student's code ends here. */
 }

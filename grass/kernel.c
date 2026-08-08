@@ -43,6 +43,8 @@ void kernel_entry() {
 #define INTR_ID_TIMER   7
 #define EXCP_ID_ECALL_U 8
 #define EXCP_ID_ECALL_M 11
+#define INTR_ID_EXTERNAL 11
+
 static void proc_yield();
 static void proc_try_syscall(struct process* proc);
 
@@ -109,7 +111,34 @@ static void intr_entry(uint id) {
      * interrupt is for receiving an Ethernet frame; (3) Read the received frame
      * from an RX buffer and print the content; (4) Complete the PLIC interrupt,
      * so PLIC can fire the next interrupt; (5) Call proc_yield() and return. */
-
+    if (id==INTR_ID_EXTERNAL)
+    {
+        uint irq = REGW(PLIC_CAUSE(core_in_kernel),0);
+        if(irq == ETH_IRQ)
+        {
+            REGW(ETH_CTL_BASE,0xC0);
+            static int rx_head = 0;
+            while(rx_desc[rx_head].status & 1)
+            {
+                ushort len = rx_desc[rx_head].length;
+                rx_buffer[rx_head][len<2047? len:2047] = '\0';
+                uchar* pkt = (uchar*)rx_buffer[rx_head];
+                ushort ethertype = (pkt[12] << 8) | pkt[13];
+                uchar proto = pkt[23];
+                INFO("Got pkt: rxdesc[%d], len=%d, ethertype=0x%x, proto=%d",
+                 rx_head, len, ethertype, (uint)proto);
+                if (ethertype == 0x0800 && proto == 17) {
+                SUCCESS("Get %d bytes from rxdesc[%d]: %s",
+                        len, rx_head, &rx_buffer[rx_head][42]);
+                }
+                rx_desc[rx_head].status = 0;
+                REGW(ETH_CTL_BASE,0x2818) = rx_head;
+                rx_head  = (rx_head +1) % 128;
+            }
+        }
+        if(irq) REGW(PLIC_CAUSE(core_in_kernel),0) = irq;
+        return proc_yield();
+    }
     /* Student's code ends here. */
 }
 
@@ -137,7 +166,7 @@ static void proc_yield() {
         // 睡眠拦截
         if(p->sleep_until>0) 
         {
-            if(mtime_get()<p->sleep_until)
+            if(now<p->sleep_until)
                 continue;
             else
                 p->sleep_until = 0; //时间到，清零
@@ -189,7 +218,7 @@ static void proc_yield() {
         // 2. 告诉定时器硬件：重置闹钟，开启新的一轮倒计时
         earth->timer_reset(core_in_kernel);
         // 3. 释放内核锁
-        kernel_lock = 0;
+        release(kernel_lock);
         // 4. 打开全局中断开关 (修改 mstatus 寄存器中的 MIE 位为 1)
         // 这意味着只要硬件中断到来，CPU 就会马上响应
         asm("csrs mstatus, %0" ::"r"(1 << 3));
