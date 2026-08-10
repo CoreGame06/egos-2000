@@ -215,6 +215,8 @@ static void proc_yield() {
         
         // 1. 将当前正在运行的进程设为空闲占位符 MAX_NPROCESS
         curr_proc_idx = MAX_NPROCESS;
+        // 【优化】修复时间溢出 BUG：休眠前也要记录占位进程的起始时间
+        proc_set[MAX_NPROCESS].last_run_time = mtime_get();
         // 2. 告诉定时器硬件：重置闹钟，开启新的一轮倒计时
         earth->timer_reset(core_in_kernel);
         // 3. 释放内核锁

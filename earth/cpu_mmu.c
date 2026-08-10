@@ -59,7 +59,7 @@ struct page_info {
 static int mmu_lock = 0;
 
 uint mmu_alloc() {
-    acquire(mmu_lock);y
+    acquire(mmu_lock);
     for (uint i = 0; i < APPS_PAGES_CNT; i++)
         if (!page_info_table[i].use) {
             page_info_table[i].use = 1;
@@ -71,6 +71,10 @@ uint mmu_alloc() {
 }
 
 void mmu_free(int pid) {
+
+    // 系统进程不释放页表
+    if(pid<GPID_USER_START) return;
+
     acquire(mmu_lock);
     int total_pages = 0;
     int pt_pages = 0;
@@ -192,14 +196,17 @@ void setup_identity_region(uint* root, int pid, uint addr, uint npages, uint fla
  *    地址对不上而崩溃。因此必须用直接映射来确保“内核想访问的物理地址”等于“CPU翻译后的地址”。
  *    这也就是为什么必须先启用系统进程，然后才可以有用户进程（先有地基，后建大楼）。
  * 
- * TODO 架构优化点（线程与进程的本质区别）：
  * 目前为了代码简单，每次启动一个系统进程，都会重新调用本函数建立一份独立的 6MB 映射。
- * 在现代工业级操作系统（如 Linux）的设计中，所有的系统进程（内核线程）
+ * 可以优化为所有的系统进程（内核线程）
  * 完全可以共享同一份内核页表。这样不仅能省去大量的页表内存开销，
- * 还能免去在系统进程间切换时刷新 TLB 和寄存器的开销。留待后续优化！
+ * 还能免去在系统进程间切换时刷新 TLB 和寄存器的开销。
+ * 
+ *  egos-2000 里的“系统进程”并不是纯粹的内核线程，它们本质上依然是完全独立的
+ *   ELF 应用程序。所以这个优化在这里用不了
  */
 void pagetable_identity_map(int pid) {
     /* Allocate the root page table. */
+
     uint ppage_id                 = earth->mmu_alloc();
     uint* root                    = (void*)PAGE_ID_TO_ADDR(ppage_id);
     page_info_table[ppage_id].pid = pid;
@@ -294,12 +301,14 @@ void page_table_map(int pid, uint vpage_no, uint ppage_id) {
 }
 
 void page_table_switch(int pid) {
-    // if (pid < 0 || pid >= MAX_NPROCESS || !pid_to_pagetable_base[pid])
-    //     pid = 0;
-    // uint* root_pt = pid_to_pagetable_base[pid];
     uint** r = pt_root(pid);
     if(!r || !*r) r = pt_root(0);
     uint* root_pt = *r;
+
+    static int curr_vm_pid = -1;
+    if (pid == curr_vm_pid) return;
+    curr_vm_pid = pid;
+
     asm("csrw satp, %0" :: "r"(((uint)root_pt>>12)|(1<<31)));
     earth->mmu_flush_cache();
 }

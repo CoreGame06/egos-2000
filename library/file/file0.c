@@ -8,7 +8,7 @@
 #ifdef MKFS
 #include <stdio.h>
 #include <sys/types.h>
-#define FATAL(msg) do { fprintf(stderr, "FATAL: %s\n", msg); exit(1); } while(0)
+#define FATAL(msg, ...) do { fprintf(stderr, "FATAL: " msg "\n", ##__VA_ARGS__); exit(1); } while(0)
 #else
 #include "egos.h"
 #endif
@@ -57,6 +57,7 @@ static void cache_init(inode_intf below)
 
     for(uint b=0; b<cache_I;b++) below->read(below,0,1+b,&inode_cache[b]);
     for(uint b=0;b<cache_F;b++) below->read(below,0,1+cache_I+b,&fat_cache[b]);
+    cache_ready = 1;
 }
 
 int get_inode(inode_intf below, uint below_ino, uint ino, struct inode* in) {
@@ -125,6 +126,18 @@ int mydisk_write(inode_intf self, uint ino, uint offset, block_t* block) {
     struct inode in;
     get_inode(below,0,ino,&in);
 
+    
+    // 在外秒找到尾巴 O(N)，避免在循环中 O(N**2)
+    int tail_block = -1;
+    if (in.size > 0) {
+        tail_block = in.head;
+        for (int i = 0; i < in.size - 1; i++) {
+            tail_block = get_fat(below, 0, sb, tail_block);
+        }
+    }
+    // 记录是否扩容，最后一次性写入磁盘
+    int expanded = 0;
+
     // 扩容
     while(in.size<=offset)
     {
@@ -134,19 +147,22 @@ int mydisk_write(inode_intf self, uint ino, uint offset, block_t* block) {
         sb->free_list_head = get_fat(below,0,sb,new_block);
         set_fat(below,0,sb,new_block,-1);
 
-        if(in.size==0)
+        if(in.size==0) {
             in.head = new_block;
-        else
-        {
-            int curr = in.head;
-            for(int i=0;i<in.size-1;i++)
-                curr=get_fat(below,0,sb,curr);
-            set_fat(below,0,sb,curr,new_block);   
+            tail_block = new_block;
+        } else {
+            set_fat(below,0,sb,tail_block,new_block);   
+            tail_block = new_block;
         }
         ++in.size;
+        expanded = 1;
+    }
+    
+    if (expanded) {
         below->write(below,0,0,&sb_cache);
         set_node(below,0,ino,&in);
     }
+
     int curr = in.head;
     for(int i=0;i<offset;i++)
         curr=get_fat(below,0,sb,curr);
@@ -175,6 +191,15 @@ int mydisk_setsize(inode_intf self, uint ino, uint nblocks) {
     get_inode(below,0,ino,&in);   
 
     int old_size = in.size;
+    int tail_block = -1;
+    if (in.size > 0) {
+        tail_block = in.head;
+        for (int i = 0; i < in.size - 1; i++) {
+            tail_block = get_fat(below, 0, sb, tail_block);
+        }
+    }
+    int expanded = 0;
+
     // 扩容
     while(nblocks>in.size)
     {
@@ -184,21 +209,24 @@ int mydisk_setsize(inode_intf self, uint ino, uint nblocks) {
         sb->free_list_head = get_fat(below,0,sb,new_block);
         set_fat(below,0,sb,new_block,-1);
 
-        if(in.size==0)
+        if(in.size==0) {
             in.head = new_block;
-        else
-        {
-            int curr = in.head;
-            for(int i=0;i<in.size-1;i++)
-                curr=get_fat(below,0,sb,curr);
-            set_fat(below,0,sb,curr,new_block);   
+            tail_block = new_block;
+        } else {
+            set_fat(below,0,sb,tail_block,new_block);   
+            tail_block = new_block;
         }
         ++in.size;
+        expanded = 1;
+    }
+    
+    if (expanded) {
         below->write(below,0,0,&sb_cache);
         set_node(below,0,ino,&in);
     }
+
     // nblocks = 0
-    if(nblocks==0)
+    if(nblocks==0 && old_size > 0)
     {
         int curr = in.head;
         while(curr!=-1)
@@ -214,7 +242,7 @@ int mydisk_setsize(inode_intf self, uint ino, uint nblocks) {
         set_node(below,0,ino,&in);
     }
     // 其余不为0，且小于原来大小的情况
-    else
+    else if (nblocks > 0 && nblocks < old_size)
     {
         int curr = in.head;
         for(int i=0;i<nblocks-1;i++)
@@ -222,7 +250,7 @@ int mydisk_setsize(inode_intf self, uint ino, uint nblocks) {
         int first_to_free = get_fat(below,0,sb,curr);
         set_fat(below,0,sb,curr,-1);
         curr = first_to_free;
-        for(int i=nblocks;i<in.size;i++)
+        for(int i=nblocks;i<old_size;i++)
         {
             int next_block = get_fat(below,0,sb,curr);
             set_fat(below,0,sb,curr,sb->free_list_head);

@@ -38,7 +38,10 @@ int dir_lookup(int dir_ino, char* name) {
     file_read(dir_ino, 0, buf);
 
     /* Read tools/mkfs.c to understand directory management. */
-    for (uint i = 0, namelen = strlen(name); i < strlen(buf) - namelen; i++)
+    uint blen = strlen(buf), namelen = strlen(name);
+    if (blen <= namelen) return -1;
+
+    for (uint i = 0; i < blen - namelen; i++)
         if (!strncmp(name, buf + i, namelen) && buf[i + namelen] == ' ' &&
             (i == 0 || buf[i - 1] == ' '))
             return atoi(buf + i + namelen);

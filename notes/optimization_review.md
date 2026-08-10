@@ -504,3 +504,66 @@ shell 收不到 reply，卡在 sys_recv）。
 （v1 中"mlfq_update_level 行为恰好正确"的说法**撤回**，实际是 bug，
 已移入 A6。）
 
+
+## E. 架构优化点补充：系统进程页表共享实现方案
+
+针对 `earth/cpu_mmu.c` 中提到的“系统进程（内核线程）共享同一份内核页表”的优化，具体实施方案如下（作为参考，**不需要应用到当前代码**）：
+
+**核心思想**：
+系统进程（PID 0, 1, 2）的虚拟地址空间完全一致，都是 `0x80000000` 到 `0x805FFFFF` 的恒等映射。因此，只需为 PID 0 创建一次页表，其他系统进程可以直接共享该页表，无需重新分配和映射。
+
+**具体修改步骤**：
+
+1. **修改 `pagetable_identity_map`，仅在第一次调用时初始化：**
+   ```c
+   void pagetable_identity_map(int pid) {
+       /* 只有第一个系统进程（PID 0）需要真正建立映射 */
+       if (pid != 0) {
+           /* 其他系统进程复用 PID 0 的页表 */
+           uint** r_0 = pt_root_alloc(0);
+           uint** r_pid = pt_root_alloc(pid);
+           *r_pid = *r_0; 
+           return;
+       }
+
+       /* 分配并初始化根页表，原来的逻辑 */
+       uint ppage_id = earth->mmu_alloc();
+       uint* root = (void*)PAGE_ID_TO_ADDR(ppage_id);
+       page_info_table[ppage_id].pid = pid;
+       memset(root, 0, PAGE_SIZE);
+
+       for (uint i = RAM_START; i < RAM_END; i += PAGE_SIZE * 1024)
+           setup_identity_region(root, pid, i, 1024, USER_RWX);
+           
+       uint** r = pt_root_alloc(pid);
+       *r = root;
+   }
+   ```
+   *(注意：如果用的是老的 `pid_to_pagetable_base` 数组，则是 `pid_to_pagetable_base[pid] = pid_to_pagetable_base[0];`)*
+
+2. **修改 `mmu_free`，防止释放共享页表：**
+   系统进程的页表在整个生命周期内不应该被释放，或者只有当引用计数为0时才释放。为了简单起见，可以禁止释放系统进程的页表。
+   ```c
+   int mmu_free(int pid) {
+       /* 系统进程共享 PID 0 的页表，因此不进行释放（或者交由 PID 0 释放） */
+       if (pid < GPID_USER_START) return 0;
+       
+       /* ... 原来的 mmu_free 逻辑 ... */
+   }
+   ```
+
+3. **修改 `page_table_switch`（可选优化）：**
+   当在两个共享同一个页表的系统进程之间切换时，可以跳过写入 `satp` 寄存器和执行 `sfence.vma`（清空 TLB）的操作，从而降低切换开销。
+   ```c
+   static uint* current_root = NULL;
+   void page_table_switch(uint* root) {
+       if (current_root == root) return; // 避免重复切换
+       current_root = root;
+       
+       /* ... 原来的写入 satp 和 sfence.vma 的逻辑 ... */
+   }
+   ```
+
+**优化收益**：
+- **内存节省**：每个系统进程省下若干物理页的页表空间。
+- **性能提升**：系统进程间切换不再需要刷新 TLB，大大提高了切换速度（尤其是中断响应和 IPC 频繁发生的微内核场景下）。

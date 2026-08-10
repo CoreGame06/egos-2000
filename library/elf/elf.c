@@ -30,18 +30,31 @@ void elf_load(int pid, elf_reader reader, int argc, void** argv) {
         uint filesz       = pheader[i].p_filesz;
         uint curr_pageno  = addr / PAGE_SIZE;
         uint end_pageno   = (addr + memsz) / PAGE_SIZE;
-        uint curr_blockno = pheader[i].p_offset / BLOCK_SIZE;
-        for (uint ppage_id, off = 0; off < filesz; off += BLOCK_SIZE) {
-            /* Allocate one page (4KB) for every 8 blocks (512 bytes). */
+        uint file_off = pheader[i].p_offset;
+        uint curr_blockno = file_off / BLOCK_SIZE;
+        uint buf_offset = file_off % BLOCK_SIZE;
+        
+        for (uint ppage_id, off = 0; off < filesz; ) {
             if (off % PAGE_SIZE == 0) {
                 ppage_id = earth->mmu_alloc();
                 earth->mmu_map(pid, curr_pageno++, ppage_id);
                 memset(PAGE_ID_TO_ADDR(ppage_id), 0, PAGE_SIZE);
             }
-            uint size =
-                (off + BLOCK_SIZE < filesz) ? BLOCK_SIZE : (filesz - off);
-            reader(curr_blockno++, buf);
-            memcpy(PAGE_ID_TO_ADDR(ppage_id) + (off % PAGE_SIZE), buf, size);
+            reader(curr_blockno, buf);
+            
+            uint copy_size = BLOCK_SIZE - buf_offset;
+            uint page_remaining = PAGE_SIZE - (off % PAGE_SIZE);
+            if (copy_size > page_remaining) copy_size = page_remaining;
+            if (off + copy_size > filesz) copy_size = filesz - off;
+            
+            memcpy(PAGE_ID_TO_ADDR(ppage_id) + (off % PAGE_SIZE), buf + buf_offset, copy_size);
+            
+            off += copy_size;
+            buf_offset += copy_size;
+            if (buf_offset == BLOCK_SIZE) {
+                buf_offset = 0;
+                curr_blockno++;
+            }
         }
 
         while (curr_pageno <= end_pageno) {
