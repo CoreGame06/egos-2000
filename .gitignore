@@ -11,4 +11,4 @@ build
 # Ignore clangd lsp files.
 .cache
 compile_commands.json
-notes/egos2000_architecture_deep_dive.md
+notes/
