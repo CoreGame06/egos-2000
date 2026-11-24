@@ -1,10 +1,3 @@
-/*
- * (C) 2026, Cornell University
- * All rights reserved.
- *
- * Description: the system call interface for applications
- */
-
 #include "egos.h"
 #include "syscall.h"
 #include <stdlib.h>

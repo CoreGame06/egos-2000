@@ -11,7 +11,7 @@
 #define MKFS 1
 #include "inode.h"
 
-// Include student's file0.c implementation directly
+// Include file0.c implementation directly
 #include "file0.c"
 
 #define DISK_BLOCKS 4096

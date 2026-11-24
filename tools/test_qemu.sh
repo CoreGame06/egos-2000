@@ -1,7 +1,7 @@
 #!/bin/bash
 export PATH=$PATH:~/xpack-riscv-none-elf-gcc-14.2.0-3/bin:~/xpack-qemu-riscv-8.2.2-1/bin
 make install || exit 1
-(printf '0\r'; sleep 7
+(sleep 7
  printf 'coresinfo\r'; sleep 2
  printf 'loop 3 &\r'; sleep 1; printf 'loop 3 &\r'; sleep 3
  printf 'cat README\r'; sleep 3

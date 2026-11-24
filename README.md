@@ -1,132 +1,75 @@
-# egos-2000: Earth and Grass Operating System
+# egos-2000
 
-**egos-2000** 是一个代码量约 2000 行的轻量级教学操作系统。它运行在 **RISC-V 32 位（rv32ima）** 架构上，支持 QEMU 4 核模拟（`-M virt -smp 4`）以及真实 RISC-V/FPGA 开发板（如 TangNano 20K、Arty A7 等）。
+**egos-2000** 是一个代码量约为 2000 行的轻量级操作系统。它运行在 **RISC-V 32 位（rv32ima）** 架构上，支持 QEMU 4 核模拟以及真实 RISC-V/FPGA 开发板。
 
-该项目采用清晰的三层微内核架构，完整实现了操作系统各个核心子系统，包括裸机引导、虚拟内存管理、多核抢占式调度、进程间通信（IPC）、文件系统及常用用户态命令。
+## 项目分层
 
----
+一般的运行 Linux 的系统都是由硬件、Linux 内核、系统基础库与工具、应用桌面环境组成。其中，系统组件与工具部分不同的 Linux 发行版本不一样。Linux 内核与系统基础库与工具共同构成 OS。
 
-## 🏛️ 三层架构设计 (Earth, Grass, Applications)
+而本项目的对应层次如下。
 
-项目名称 "egos" 来源于其独特的 **Earth - Grass - OS (Apps)** 三层分层架构：
+### 硬件
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Application Layer (应用层 / apps/)                         │
-│  - 系统服务：sys_proc, sys_file, sys_terminal, sys_shell    │
-│  - 用户命令：ls, cat, cd, echo, sleep, producer_consumer...  │
-│  - 通过 struct grass 接口发起系统调用与 IPC 通信            │
-├─────────────────────────────────────────────────────────────┤
-│  Grass Layer (微内核层 / grass/)                            │
-│  - 硬件无关的内核核心 (kernel.c / kernel.s / process.c)     │
-│  - 进程控制块 (PCB) 状态机、多级反馈队列 (MLFQ) 抢占式调度   │
-│  - 提供 sys_send / sys_recv 同步消息传递与多核同步          │
-├─────────────────────────────────────────────────────────────┤
-│  Earth Layer (硬件抽象层 / earth/)                          │
-│  - 硬件相关的底层封装 (boot.c, cpu_intr.c, cpu_mmu.c...)    │
-│  - CSR 寄存器控制、Sv32 页表与 Soft TLB、定时器与外部中断   │
-│  - 串口 (UART)、SD 卡 (SDHCI DMA / SPI)、网卡 (e1000) 驱动  │
-└─────────────────────────────────────────────────────────────┘
-```
+QEMU 模拟一台包含 CPU、内存和外设的机器，egos 运行在这台机器上。
 
-各层之间通过定义在 [`library/egos.h`](library/egos.h) 中的 `struct earth` 和 `struct grass` 函数指针表进行解耦调用，实现了清晰的抽象与隔离。
+### 内核
 
----
+对应 Linux 内核的主体，在本项目中主要是 Earth 和 Grass。
 
-## ✨ 主要功能特性
+- **Grass** 管理程序的执行，包括进程状态、调度、上下文切换和 IPC。
+- **Earth** 提供操作硬件的底层能力，包括物理页与页表操作、定时器、中断配置、磁盘和串口驱动，并通过接口屏蔽部分硬件差异。
 
-* **多核裸机引导与同步 (Boot & SMP)**：支持 4 核并行启动，使用原子指令与自旋锁实现多核初始化与任务分发。
-* **虚拟内存管理 (Memory Management)**：
-  * 支持 **Sv32 两级硬件页表** 与 **Soft TLB (软件换入换出)** 两种地址翻译模式。
-  * 提供物理页分配器（`mmu_alloc` / `mmu_free`）与 PMP (物理内存保护) 配置。
-* **抢占式调度 (Preemptive Scheduling)**：基于 CLINT 硬件时钟中断驱动，实现 5 级多级反馈队列（MLFQ）算法，支持进程动态降级与周期性防饥饿重置。
-* **微内核 IPC 机制**：基于 `SYS_SEND` / `SYS_RECV` 实现轻量级同步消息传递，用户态服务（进程、文件、终端）均通过 IPC 解耦协作。
-* **文件系统 (File System)**：FAT 风格的简单文件系统，支持 Inode 管理、目录树遍历与数据块读写，支持元数据缓存优化。
-* **外设驱动支持**：包含 UART 串口、SD 卡（支持 DMA 读写）、Intel e1000 以太网卡及 VGA 显示。
+### 内核之外的代码
 
----
+- `apps/system/`：进程、文件、终端等系统服务，以及 Shell。
+- `apps/user/`：`ls`、`cat` 等命令，以及生产者消费者、网络等演示程序。
+- `library/`：系统调用封装、服务访问接口、部分 C 库功能，以及文件系统、ELF 加载等共享代码。
 
-## 🗺️ 内存布局 (Memory Layout)
+与真正的 Linux 系统不同的是，`library/` 是按代码复用组织的目录，里面的代码可以被内核或应用使用，不能把整个目录都视为用户态基础库。
 
-系统物理内存共 6MB（起始地址 `0x80000000`），采用统一虚拟地址空间映射：
+## 目录结构
 
-```
-0x80600000 ┌─────────────────────────────────────── RAM_END (6MB 物理内存上限)
-           │ VGA 显存 / 硬件 Framebuffer
-0x80400000 ├─────────────────────────────────────── APPS_PAGES_BASE / APPS_STACK_TOP
-           │ 2MB 物理页池 (512 个 4KB 页，供 mmu_alloc 分配)
-           │ 同时为用户进程栈顶 (向下生长)
-0x80301000 ├─────────────────────────────────────── SYSCALL_ARG (struct syscall 共享参数页)
-0x80300000 ├─────────────────────────────────────── APPS_ARG (argc / argv 参数页)
-0x80200000 ├─────────────────────────────────────── APPS_ENTRY / EGOS_STACK_TOP
-           │ 1MB 应用程序代码与数据段入口
-           │ 同时为内核栈顶 (Trap 时 SP 切换至此)
-0x80102000 ├─────────────────────────────────────── SHELL_WORK_DIR (当前工作目录共享页)
-0x80101000 ├─────────────────────────────────────── GRASS_STRUCT (struct grass 函数指针)
-0x80100000 ├─────────────────────────────────────── EARTH_STRUCT (struct earth 函数指针)
-0x80000000 └─────────────────────────────────────── RAM_START (内核代码与数据)
-```
+从运行角度看，`earth/` 和 `grass/` 组成内核，`apps/` 放系统服务和用户程序，`library/` 放它们共用的代码。从构建角度看，`tools/` 放构建工具和 QEMU 使用的镜像，`build/` 保存编译结果。
 
----
+| 目录 | 作用 |
+| --- | --- |
+| `earth/` | 负责开机引导，以及页表、中断、定时器、串口和磁盘等底层操作。 |
+| `grass/` | 负责管理进程和线程，处理系统调用、抢占式调度、上下文切换和进程间通信。 |
+| `apps/` | `system/` 放进程服务、文件服务、终端服务和 Shell。`user/` 放 `ls`、`cat` 等命令和演示程序。 |
+| `library/` | 放共享代码。`syscall/` 封装系统调用和服务请求，`elf/` 负责加载可执行文件，`file/` 实现文件系统，`libc/` 提供内存分配和格式化输出等基础功能。 |
+| `tools/` | 放构建和测试工具，也存放 QEMU 启动时使用的文件，如内核镜像 `egos.bin` 和磁盘镜像 `disk.img`。其中 `mkfs` 在宿主机上运行，负责制作磁盘镜像。 |
+| `build/` | 保存编译产物。`release/` 放内核和各程序的 ELF 文件，`debug/` 放对应的反汇编清单，方便查看编译后的指令。 |
 
-## 📁 目录结构
+例如，在 Shell 里执行 `cat` 时，`apps/user/` 下的 `cat` 通过 `library/syscall/` 里的 `file_read()` 向文件服务发请求。Grass 负责传递消息，`apps/system/` 下的文件服务查找对应的磁盘块，再通过 Earth 的磁盘驱动读取数据。
 
-```
-egos-2000/
-├── earth/          # 硬件抽象层：引导、MMU、中断与设备驱动
-├── grass/          # 内核层：Trap 汇编、进程调度 (MLFQ)、系统调用分发
-├── apps/           # 应用层：包含系统服务 (system/) 与用户程序 (user/)
-├── library/        # 共享库：libc、ELF 加载器、文件系统 (file/)、syscall
-├── tools/          # 工具集：磁盘镜像生成工具 (mkfs) 与固件
-├── notes/          # 项目架构深度剖析与学习笔记
-└── Makefile        # 构建脚本与 QEMU 启动配置
-```
+执行 `make qemu` 时，Makefile 先把源码编译成 `build/release/` 里的 ELF 文件，再生成 `tools/` 里的内核、磁盘和 Flash 镜像，最后用这些镜像启动 QEMU。
 
----
+## 启动运行
 
-## 🚀 快速开始
+Linux 的启动是这样的：先让内核建立基本运行环境，再启动第一个进程，由它启动其他系统服务。
 
-### 依赖要求
-* **交叉编译器**：`riscv-none-elf-gcc` 或 `riscv32-unknown-elf-gcc`
-* **模拟器**：`qemu-system-riscv32`
+### 启动流程总览
 
-### 编译与运行
-
-```bash
-# 1. 编译内核、用户应用并生成磁盘与 ROM 镜像
-make install
-
-# 2. 在 QEMU 中启动 4 核模拟
-make qemu
-
-# 3. 清理构建生成文件
-make clean
-```
-
-### 运行截图示例
+我们这个项目是这样的：
 
 ```text
--------- Simulate on QEMU-RISCV --------
-[INFO] Booting egos-2000 on RISC-V (4 cores)...
-[SUCCESS] Initialized Earth Layer.
-[INFO] Loading sys_proc...
---------------------------------------------------
-Welcome to egos-2000!
---------------------------------------------------
-➜ ~ ls
-bin/   home/  README
-➜ ~ cat README
-➜ ~ coresinfo
-==============Core ID / Process ID==============
-Core #0 is running pid=4
-Core #1 is running pid=0
-Core #2 is running pid=0
-Core #3 is running pid=0
+启动 QEMU，建立模拟硬件
+    ↓
+加载 egos 内核，进入 boot_loader
+    ↓
+第一个获得启动锁的核心初始化 Earth
+    ↓
+进入 Grass，加载并启动 sys_proc（PID 1）
+    ↓
+sys_proc 释放启动锁，让其他核心完成各自初始化
+    ↓
+sys_proc 启动 sys_terminal（PID 2），等待就绪消息
+    ↓
+sys_proc 启动 sys_file（PID 3），等待就绪消息
+    ↓
+sys_proc 启动 sys_shell（PID 4）
+    ↓
+Shell 自动执行一次 cd，设置初始工作目录
+    ↓
+显示命令提示符，等待输入
 ```
-
----
-
-## 📄 许可证与致谢
-
-* 本项目基于 Cornell University 的 **egos-2000** 教学操作系统构建。
-* 遵循 MIT 开源许可证。

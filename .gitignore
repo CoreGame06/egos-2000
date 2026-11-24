@@ -12,3 +12,18 @@ build
 .cache
 compile_commands.json
 notes/
+
+# Local run guide and notes.
+/USAGES.md
+/note.md
+
+# Ignore books / courses docs
+egos_book_bilingual/
+egos_book_en/
+
+# Ignore AI / IDE / Agent configs & caches
+.gemini/
+.qoder/
+.vscode/
+.idea/
+.DS_Store

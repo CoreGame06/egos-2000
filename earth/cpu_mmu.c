@@ -1,32 +1,34 @@
 /*
- * (C) 2026, Cornell University
- * All rights reserved.
- *
- * Description: wrapping the CPU interface for memory management unit (MMU)
- * This file contains functions for memory allocation/free, virtual memory
- * address translation (software TLB and page table), and cache flushing.
- */
+内存管理，固定使用页表
+把内存按 4096 字节分成一页一页，负责分配和回收这些物理页。
+用页表记录“程序使用的虚拟地址 -> 实际内存的物理地址”，并为核心切换页表。
+页表本身也是放在内存里的数据，同样需要申请物理页来保存。
+
+*/
 
 #include "egos.h"
 #include <string.h>
 #include "servers.h"
 
+// 每个物理页占 4096 字节（4 KiB）
 #define PAGE_SIZE          4096
-#define PAGE_NO_TO_ADDR(x) (char*)(x * PAGE_SIZE)
+// 把物理页池下标 x 换成实际地址；例如 x=2，对应 0x80400000 + 2*4096。
 #define PAGE_ID_TO_ADDR(x) ((char*)APPS_PAGES_BASE + x * PAGE_SIZE)
+// 可分配范围为 [0x80400000, 0x80600000)，共 2 MiB，也就是 512 页。
 #define APPS_PAGES_CNT     (RAM_END - APPS_PAGES_BASE) / PAGE_SIZE
 
-#define MAX_NPROCESS 256
-// static uint* pid_to_pagetable_base[MAX_NPROCESS];
-
+// 最多登记 32 份页表关系，不表示 PID 必须小于 32。
 #define MAX_PT_ENTRY 32
 
+// 登记“哪个进程使用哪份页表”。本项目的页表分两级，root 指向第一级表。
 static struct {
-    int pid;
-    uint* root;
+    int pid;    // 进程编号。
+    uint* root; // 第一级页表的起始物理地址。
 } pt_map[MAX_PT_ENTRY];
 
-// 查找
+// 查找 pid 的页表登记项，没有对应记录就返回 NULL。
+// 返回的是 root 这个指针字段的地址，所以调用者用 *r 取得页表地址，
+// 也能通过 *r = 新地址修改登记项；因此返回类型是 uint**。
 static uint** pt_root(int pid)
 {
     for(uint i=0;i<MAX_PT_ENTRY;i++)
@@ -34,7 +36,7 @@ static uint** pt_root(int pid)
     return NULL;
 }
 
-// 先查找，没有则分配空
+// 为 pid 查找或占用一个登记项；这里只登记，不申请或建立真正的页表。
 static uint** pt_root_alloc(int pid)
 {
     uint** r = pt_root(pid);
@@ -50,14 +52,18 @@ static uint** pt_root_alloc(int pid)
     FATAL("pt_map:too many page tables");
 }
 
+// 记录每个物理页是否占用、属于谁。它不是页表，不负责翻译地址。
+// 程序的数据页和存放页表的页都会登记，进程退出时可以一起回收。
 struct page_info {
-    int use;
-    int pid;
-    uint vpage_no;
+    int use; // 0 表示空闲，1 表示已分配。
+    int pid; // 拥有这一物理页的进程编号。
 } page_info_table[APPS_PAGES_CNT];
 
+// 多个核心可能同时申请内存，用锁避免它们分到同一页。
 static int mmu_lock = 0;
 
+// 申请一个空闲物理页，返回页池下标，不是地址。例如返回 2，要再用 PAGE_ID_TO_ADDR(2)。
+// 这里仅标记“已占用”，不清零原内容，也不登记 PID，这两件事由后面的调用者完成。
 uint mmu_alloc() {
     acquire(mmu_lock);
     for (uint i = 0; i < APPS_PAGES_CNT; i++)
@@ -70,152 +76,91 @@ uint mmu_alloc() {
     FATAL("mmu_alloc: no more free memory");
 }
 
+// 回收 pid 对应进程的内存：删除页表登记，再把属于它的所有物理页标为空闲。
 void mmu_free(int pid) {
-
-    // 系统进程不释放页表
-    if(pid<GPID_USER_START) return;
+    // PID 1~4 是常驻系统服务，当前实现不回收它们的页。
+    if (pid < GPID_USER_START) return;
 
     acquire(mmu_lock);
     int total_pages = 0;
     int pt_pages = 0;
 
-    if(earth->translation == PAGE_TABLE && pid>=GPID_USER_START)
-    {
-        // uint* root_pt = pid_to_pagetable_base[pid];
-        // if(root_pt)
-        // {
-        //     pt_pages = 1;
-        //     for(int i=0;i<1024;i++)
-        //     {
-        //         if(root_pt[i]&(0x1))
-        //             ++pt_pages;
-        //     }    
-        // }
-        // pid_to_pagetable_base[pid] = 0;
-        uint** r = pt_root(pid);
-        if(r && *r)
-        {
-            uint *root_pt = *r;
-            pt_pages = 1;
-            for(int i =0;i<1024;i++)
-            {
-                if(root_pt[i] & (0x1))
-                    ++pt_pages;
+    uint** r = pt_root(pid);
+    if (r && *r) {
+        uint* root_pt = *r;
+        pt_pages = 1; // 第一级页表占一页；下面每个有效项对应一页第二级页表。
+        for (int i = 0; i < 1024; i++)
+            if (root_pt[i] & 0x1) ++pt_pages; // 统计页表占了多少页
+
+        // 注销页表登记
+        *r = 0;
+        for (int i = 0; i < MAX_PT_ENTRY; i++)
+            if (pt_map[i].pid == pid) {
+                pt_map[i].pid = 0;
+                break;
             }
-            *r = 0;
-            for(int i=0;i<MAX_PT_ENTRY;i++)
-            {
-                if(pt_map[i].pid == pid)
-                {
-                    pt_map[i].pid = 0;
-                    break;
-            
-                }
-            }
-        }
     }
+
+    // 清掉占用/所有者记录，使这些页以后可再次分配；不会把页里的原数据擦零。
+    // 这里一并回收一级页表和二级页表所占用的内存
     for (uint i = 0; i < APPS_PAGES_CNT; i++)
-        if (page_info_table[i].use && page_info_table[i].pid == pid)
-        {
-            ++total_pages; //统计物理页的使用
+        if (page_info_table[i].use && page_info_table[i].pid == pid) {
+            ++total_pages;
             memset(&page_info_table[i], 0, sizeof(struct page_info));
         }
     release(mmu_lock);
 
-    if(earth->translation == PAGE_TABLE && pid>=GPID_USER_START)
-    {
-        INFO("mmu_free() released %d pages (%d are page tables) for process %d",
-        total_pages, pt_pages, pid);
-    }
-
-}
-void soft_tlb_map(int pid, uint vpage_no, uint ppage_id) {
-    page_info_table[ppage_id].pid      = pid;
-    page_info_table[ppage_id].vpage_no = vpage_no;
+    INFO("mmu_free() released %d pages (%d are page tables) for process %d",
+         total_pages, pt_pages, pid);
 }
 
-void soft_tlb_switch(int pid) {
-    static int curr_vm_pid = -1;
-    if (pid == curr_vm_pid) return;
-
-    /* Unmap curr_vm_pid from the user address space. */
-    for (uint i = 0; i < APPS_PAGES_CNT; i++)
-        if (page_info_table[i].use && page_info_table[i].pid == curr_vm_pid)
-            memcpy(PAGE_ID_TO_ADDR(i),
-                   PAGE_NO_TO_ADDR(page_info_table[i].vpage_no), PAGE_SIZE);
-
-    /* Map pid to the user address space. */
-    for (uint i = 0; i < APPS_PAGES_CNT; i++)
-        if (page_info_table[i].use && page_info_table[i].pid == pid)
-            memcpy(PAGE_NO_TO_ADDR(page_info_table[i].vpage_no),
-                   PAGE_ID_TO_ADDR(i), PAGE_SIZE);
-
-    curr_vm_pid = pid;
-}
-
-uint soft_tlb_translate(int pid, uint vaddr) {
-    soft_tlb_switch(pid);
-    return vaddr;
-}
-
-// static uint* pid_to_pagetable_base[MAX_NPROCESS];
-
-/* The code below creates an identity map using page tables (RISC-V Sv32). */
+// 页表每项既保存物理页号，也保存访问许可和状态，称为“页表项”。
+// 这里允许用户读、写、执行，并预设访问/写入状态
 #define USER_RWX     (0xC0 | 0x1F)
-/* Assume at most MAX_NPROCESS unique processes, just for simplicity. */
 
+// 建立一段“虚拟地址数值 = 物理地址数值”的恒等映射。
+// root：第一级表地址；pid：新页表页归谁；addr：起始地址；npages：映射多少页；flag：访问许可。
 void setup_identity_region(uint* root, int pid, uint addr, uint npages, uint flag) {
+    // 32 位地址分为：高 10 位选第一级表项，中间 10 位选第二级表项，低 12 位选页内字节。
     uint vpn1 = addr >> 22;
     uint* leaf;
 
     if (root[vpn1] & 0x1) {
-        /* Leaf has been allocated. */
+        // 最低位为 1 表示这项有效，取出已经存在的第二级表地址。
+        // 页表项中存的是编码后的页号，左移 2 位再清掉低 12 位，才能还原页首地址。
         leaf = (void*)((root[vpn1] << 2) & 0xFFFFF000);
     } else {
-        /* Allocate the leaf page table. */
+        // 没有第二级表，先申请一页存放它；一项 4 字节，共 1024 项，正好占 4096 字节。
         uint ppage_id                 = earth->mmu_alloc();
         leaf                          = (void*)PAGE_ID_TO_ADDR(ppage_id);
         page_info_table[ppage_id].pid = pid;
         memset(leaf, 0, PAGE_SIZE);
+        // 页表项把物理页号放在 bit10 以上：(地址 >> 12) << 10 等价于地址 >> 2。
+        // 这里只加有效位 0x1，表示“继续到第二级表查找”，还不是程序的数据页。
         root[vpn1] = ((uint)leaf >> 2) | 0x1;
     }
 
-    /* Set up the entries in the leaf page table. */
+    // &0x3FF 只保留 10 位，取得第二级表中的起始下标。
     uint vpn0 = (addr >> 12) & 0x3FF;
+    // 第二级表项才登记实际物理页和访问许可；每前进一页，地址增加 4096 字节。
     for (uint i = 0; i < npages; i++)
         leaf[vpn0 + i] = ((addr + i * PAGE_SIZE) >> 2) | flag;
 }
 
-/*
- * 【系统进程的直接映射 (Identity Mapping) 与开机自举机制】
- * 1. 本函数的作用：为系统进程（PID 0, 1, 2）分配根页表和所有需要的叶页表，
- *    并将整个 6MB 的物理内存以及所有硬件外设（网卡、串口等）进行 1:1 恒等映射。
- * 2. 为什么必须建立直接映射：正是因为操作系统在一开始（自举阶段）需要
- *    【直接读取和操控真实的物理内存地址】（如分配物理页、清零页表、读写硬件）。
- *    如果虚拟地址和物理地址不同，一旦开启虚拟内存（MMU），内核代码瞬间就会因为
- *    地址对不上而崩溃。因此必须用直接映射来确保“内核想访问的物理地址”等于“CPU翻译后的地址”。
- *    这也就是为什么必须先启用系统进程，然后才可以有用户进程（先有地基，后建大楼）。
- * 
- * 目前为了代码简单，每次启动一个系统进程，都会重新调用本函数建立一份独立的 6MB 映射。
- * 可以优化为所有的系统进程（内核线程）
- * 完全可以共享同一份内核页表。这样不仅能省去大量的页表内存开销，
- * 还能免去在系统进程间切换时刷新 TLB 和寄存器的开销。
- * 
- *  egos-2000 里的“系统进程”并不是纯粹的内核线程，它们本质上依然是完全独立的
- *   ELF 应用程序。所以这个优化在这里用不了
- */
+// 为启动阶段（PID 0）或系统服务（PID 1~4）创建一份较完整的地址对照表。
+// 系统服务需要直接访问许多内存和设备，因此先按原地址映射这些区域。
 void pagetable_identity_map(int pid) {
-    /* Allocate the root page table. */
-
+    // 先申请一页存放第一级表，清零表示最初所有表项都无效。
     uint ppage_id                 = earth->mmu_alloc();
     uint* root                    = (void*)PAGE_ID_TO_ADDR(ppage_id);
     page_info_table[ppage_id].pid = pid;
     memset(root, 0, PAGE_SIZE);
 
-    /* Set up the identity map for various memory regions. */
+    // 每轮映射 1024 页
     for (uint i = RAM_START; i < RAM_END; i += PAGE_SIZE * 1024)
         setup_identity_region(root, pid, i, 1024, USER_RWX);
 
+    // 映射中断控制器、网卡、串口、定时器、Flash 和显存。
     setup_identity_region(root, pid, PLIC_BASE, 1024, USER_RWX);
     setup_identity_region(root, pid, ETH_CTL_BASE, 4, USER_RWX);
     setup_identity_region(root, pid, UART_BASE, 1, USER_RWX);
@@ -223,57 +168,55 @@ void pagetable_identity_map(int pid) {
     setup_identity_region(root, pid, FLASH_ROM_BASE, 1024, USER_RWX);
     setup_identity_region(root, pid, VIDEO_FRAME_BASE, 512, USER_RWX);
 
-    if (earth->platform == QEMU) {
-        setup_identity_region(root, pid, ETH_PCI_ECAM, 1, USER_RWX);
-        setup_identity_region(root, pid, SDHCI_PCI_ECAM, 1, USER_RWX);
-        setup_identity_region(root, pid, SDHCI_BASE, 1, USER_RWX);
-    } else {
-        setup_identity_region(root, pid, SDSPI_BASE, 1, USER_RWX);
-        setup_identity_region(root, pid, WIFI_BASE, 1, USER_RWX);
-        setup_identity_region(root, pid, ETH_BUF_BASE, 2, USER_RWX);
-    }
+    setup_identity_region(root, pid, ETH_PCI_ECAM, 1, USER_RWX);
+    setup_identity_region(root, pid, SDHCI_PCI_ECAM, 1, USER_RWX);
+    setup_identity_region(root, pid, SDHCI_BASE, 1, USER_RWX);
+
+    // 先完成页表内容的写入，再把整份表的起点登记给这个 PID。
     asm volatile("fence rw, rw" ::: "memory");
-    // pid_to_pagetable_base[pid]    = root;
     *pt_root_alloc(pid) = root;
 }
 
+// 给 pid 建立“一页虚拟内存 -> 一页物理内存”的对应关系
+// vpage_no 是虚拟地址 / 4096，ppage_id 是 mmu_alloc 返回的物理页池下标。
+// 例：page_table_map(5, 0x80200, 2)，表示 PID 5 的 0x80200000 对应物理地址 0x80402000。
 void page_table_map(int pid, uint vpage_no, uint ppage_id) {
-    // if (pid >= MAX_NPROCESS) FATAL("page_table_map: pid too large");
+    // 先找这个进程的第一级表；登记项或表地址不存在时，需要先建立。
     uint** r = pt_root(pid);
     if(!r || !*r)
     {
+        // PID小于的对应的是系统服务进程，系统服务进程先建立上面的广泛映射，可以访问一些底层内存
+        //普通用户进程只准备需要的共享区域。
         if(pid<GPID_USER_START)
             pagetable_identity_map(pid);
         else
         {
+            // 申请内存存放第一级页表
             uint ppage_id_root = earth->mmu_alloc();
             uint* root = (void*)PAGE_ID_TO_ADDR(ppage_id_root);
-            page_info_table[ppage_id_root].pid = pid; //正向
+            page_info_table[ppage_id_root].pid = pid; // 记录这一页第一级表的所有者。
             memset(root,0,PAGE_SIZE);
         
-            setup_identity_region(root, pid, SHELL_WORK_DIR, 1, USER_RWX); // SHELL_WORK_DIR要求恒等映射，实现共享内存
-            /* 2.为用户进程映射 Flash ROM (放着图片) 和 VGA 显存 (用于显示) */
+            // 工作目录页供 Shell 和 cd 等进程共享，让它们看到同一份目录信息。
+            setup_identity_region(root, pid, SHELL_WORK_DIR, 1, USER_RWX);
+
+            // 给当前进程配置一些必要的映射，关于显示、网卡等等
             setup_identity_region(root, pid, FLASH_ROM_BASE, 512, USER_RWX);
             setup_identity_region(root, pid, VIDEO_FRAME_BASE, 512, USER_RWX);
-            /* 映射 EARTH_STRUCT 以便用户态宏定义(如FLASH_ROM_BASE)中可以访问 earth->platform */
-            setup_identity_region(root, pid, EARTH_STRUCT, 1, USER_RWX);
-
-            /* 添加以太网网卡和中断控制器的内存映射 */
-            if (earth->platform == QEMU) {
-                setup_identity_region(root, pid, ETH_PCI_ECAM, 1, USER_RWX);
-                setup_identity_region(root, pid, ETH_CTL_BASE, 4, USER_RWX);
-                setup_identity_region(root, pid, PLIC_BASE, 1024, USER_RWX);
-            } else {
-                setup_identity_region(root, pid, ETH_BUF_BASE, 2, USER_RWX);
-            }
+            // 固定映射 QEMU 的网卡和中断控制器，供网络演示使用。
+            setup_identity_region(root, pid, ETH_PCI_ECAM, 1, USER_RWX);
+            setup_identity_region(root, pid, ETH_CTL_BASE, 4, USER_RWX);
+            setup_identity_region(root, pid, PLIC_BASE, 1024, USER_RWX);
             asm volatile("fence rw, rw" ::: "memory");
-            *pt_root_alloc(pid) = root;  // 反向
+            *pt_root_alloc(pid) = root;  // 将新建的第一级表登记到 pt_map。
         }
         r = pt_root(pid);
     } 
 
+    // 建立具体的虚拟与物理的映射
     uint* root = *r;
 
+    // 把两种页号分别换回地址。虚拟页号和物理页池下标不能直接混用。
     uint vaddr = vpage_no * PAGE_SIZE;
     uint paddr = (uint)PAGE_ID_TO_ADDR(ppage_id);
 
@@ -281,10 +224,10 @@ void page_table_map(int pid, uint vpage_no, uint ppage_id) {
     uint* leaf;
 
     if (root[vpn1] & 0x1) {
-        /* Leaf has been allocated. */
+        // 通过第一级表找到已有的第二级表。
         leaf = (void*)((root[vpn1] << 2) & 0xFFFFF000);
     } else {
-        /* Allocate the leaf page table. */
+        // 申请第二级表。这个块里的同名 ppage_id 指页表页，块外的仍指参数中的数据页。
         uint ppage_id                 = earth->mmu_alloc();
         leaf                          = (void*)PAGE_ID_TO_ADDR(ppage_id);
         page_info_table[ppage_id].pid = pid;
@@ -292,35 +235,34 @@ void page_table_map(int pid, uint vpage_no, uint ppage_id) {
         asm volatile("fence rw, rw" ::: "memory");
         root[vpn1] = ((uint)leaf >> 2) | 0x1;
     }
+    // 中间 10 位选第二级表项，填入物理页号和访问许可。
     uint vpn0 = (vaddr >> 12) & 0x3FF;
     leaf[vpn0] = (paddr>>2) | USER_RWX;
     asm volatile("fence rw, rw" ::: "memory");
-    page_info_table[ppage_id].pid = pid;
-    page_info_table[ppage_id].vpage_no = vpage_no;
-    /* Student's code ends here. */
+    page_info_table[ppage_id].pid = pid; // 记录实际数据页属于哪个进程，以便退出时回收。
 }
 
+// 让当前核心改用 pid 对应的页表，改变地址翻译依据。
+// satp 为当前核心保存页表设置的寄存器，每个核心都要分别设置。
 void page_table_switch(int pid) {
     uint** r = pt_root(pid);
-    if(!r || !*r) r = pt_root(0);
+    if(!r || !*r) r = pt_root(0); // 没找到目标表时尝试启动表
     uint* root_pt = *r;
 
-    static int curr_vm_pid = -1;
-    if (pid == curr_vm_pid) return;
-    curr_vm_pid = pid;
-
+    // root_pt >> 12 换成物理页号；最高位设 1，选择本项目使用的两级 Sv32 页表格式。
     asm("csrw satp, %0" :: "r"(((uint)root_pt>>12)|(1<<31)));
+    // 切换完后刷新TLB
     earth->mmu_flush_cache();
 }
 
+// 查询 pid 的虚拟地址 vaddr 对应哪个物理地址，供内核读取系统调用参数等场景使用。
+// 普通用户程序访问内存时，CPU 会自动按页表翻译，不需要每次调用这个 C 函数。
 uint page_table_translate(int pid, uint vaddr) {
-    // if (pid < 0 || pid >= MAX_NPROCESS || !pid_to_pagetable_base[pid])
-    //     pid = 0;
-    // uint* root_pt = pid_to_pagetable_base[pid];
     uint** r = pt_root(pid);
     if(!r || !*r) r = pt_root(0);
     uint* root_pt = *r;
     uint vpn1 = vaddr >> 22;
+    // 当前遇到无效项会返回原地址，不是完整的地址合法性/权限检查。
     if (!root_pt || !(root_pt[vpn1] & 0x1)) return vaddr;
     uint* leaf = (void*)((root_pt[vpn1] << 2) & 0xFFFFF000);
 
@@ -329,79 +271,36 @@ uint page_table_translate(int pid, uint vaddr) {
     uint pte = leaf[vpn0];
     if (!(pte & 0x1)) return vaddr;
 
+    // 左边还原物理页起点，右边保留原地址在页内的位置，两者拼成完整物理地址。
     uint paddr = ((pte << 2) & 0xFFFFF000) | (vaddr & 0xFFF);
     return paddr;
 }
 
+// 刷新CPU缓存的地址翻译结果TLB
 void flush_cache() {
-    if (earth->platform == HARDWARE) {
-        /* Flush the L1 instruction cache. */
-        /* See
-         * https://github.com/yhzhang0128/litex/blob/egos/litex/soc/cores/cpu/vexriscv_smp/system.h#L9-L25
-         */
-        asm(".word(0x100F)\nnop\nnop\nnop\nnop\nnop\n");
-    }
-    if (earth->translation == PAGE_TABLE) {
-        /* Flush the TLB, the cache for page table entries. */
-        /* See
-         * https://riscv.org/wp-content/uploads/2017/05/riscv-privileged-v1.10.pdf#subsection.4.2.1
-         */
-        asm("sfence.vma zero,zero");
-    }
+    asm("sfence.vma zero,zero"); // 让当前核心不再使用旧的页表翻译结果。
 }
 
+// boot.c 调用的初始化入口：登记接口 -> 设置访问许可 -> 建启动页表 -> 告诉当前核心。
 void mmu_init() {
+    // 先登记分配、回收和刷新接口，后面创建页表时就能通过 Earth 接口申请物理页。
     earth->mmu_free        = mmu_free;
     earth->mmu_alloc       = mmu_alloc;
     earth->mmu_flush_cache = flush_cache;
 
-    /* Set up a PMP region for the whole 4GB address space. */
-    asm("csrw pmpaddr0, %0" : : "r"(0x40000000));
-    asm("csrw pmpcfg0, %0" : : "r"(0xF));
+    // PMP 是物理内存保护：先允许访问 0~4 GiB 的物理地址范围，再由用户页表限制具体访问。
+    asm("csrw pmpaddr0, %0" :: "r"(0x40000000));
+    asm("csrw pmpcfg0, %0" :: "r"(0xF));
 
-    /* Student's code goes here (System Call & Protection). */
+    // 先在内存中建立一份启动页表0，再把这份页表的位置告诉当前 CPU 核心
+    // 把页表位置及翻译方式写进 CPU 的 satp 寄存器
+    pagetable_identity_map(0);
+    asm("csrw satp, %0" :: "r"(((uint)*pt_root(0) >> 12) | (1 << 31)));
 
-    /* Replace the PMP region above with two PMP NAPOT regions:
-     * [APPS_ENTRY, APPS_ENTRY + 2MB) with permission R/W/X;
-     * [SHELL_WORK_DIR, SHELL_WORK_DIR + 4KB) with permission R/W. */
-     uint pmpaddr0 = (APPS_ENTRY>>2) | (((2*1024*1024)>>3)-1);
-     uint pmpaddr1 = (SHELL_WORK_DIR>>2) | (((4*1024)>>3)-1);
-     asm("csrw pmpaddr0, %0": : "r"(pmpaddr0));
-     asm("csrw pmpaddr1, %0": : "r"(pmpaddr1));
+    // 登记后续加载程序、调度和处理系统调用时使用的接口；赋值本身不执行这些函数。
+    earth->mmu_map       = page_table_map;
+    earth->mmu_switch    = page_table_switch;
+    earth->mmu_translate = page_table_translate;
 
-     // 写入权限
-    /*
-    权限要求：R=1, W=1, X=1 → 二进制 0000 0111（十六进制 0x7）
-    式要求：NAPOT 模式 → 二进制 0001 1000（十六进制 0x18）
-    按位或合并：0x18 | 0x7 = 0x1F （二进制 0001 1111）
-    */
-    uint pmpcfg0 = 0x1f | (0x1B<<8);
-    asm("csrw pmpcfg0, %0": : "r"(pmpcfg0));
-    /* Student's code ends here. */
-
-    CRITICAL("Choose a memory translation mechanism:");
-    printf("Enter 0: page tables.\n\rEnter 1: software TLB.\n\r");
-
-    char buf[2];
-    for (buf[0] = 0; buf[0] != '0' && buf[0] != '1'; earth->tty_read(&buf[0]));
-    earth->translation = (buf[0] == '0') ? PAGE_TABLE : SOFT_TLB;
-    INFO("%s translation is chosen",
-         earth->translation == PAGE_TABLE ? "Page table" : "Software");
-
-    if (earth->translation == PAGE_TABLE) {
-        /* Set up an identity map using page tables. */
-        // 选择虚拟内存后，不在依赖物理内存墙来限制用户进程的访问空间
-        asm("csrw pmpaddr0, %0" : : "r"(0x40000000));
-        asm("csrw pmpcfg0, %0" : : "r"(0xF));
-        pagetable_identity_map(0);
-        asm("csrw satp, %0" ::"r"(((uint)*pt_root(0) >> 12) | (1 << 31)));
-
-        earth->mmu_map       = page_table_map;
-        earth->mmu_switch    = page_table_switch;
-        earth->mmu_translate = page_table_translate;
-    } else {
-        earth->mmu_map       = soft_tlb_map;
-        earth->mmu_switch    = soft_tlb_switch;
-        earth->mmu_translate = soft_tlb_translate;
-    }
+    INFO("Sv32 page table translation is enabled");
 }
